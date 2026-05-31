@@ -15,6 +15,126 @@ A medical bill processing platform that extracts line items from PDF bills, comp
 
 ---
 
+## Case Status Flow
+
+```
+active
+  └─► bills_uploaded       (first bill uploaded to the case)
+        └─► provider_review    (law firm marks ready for provider)
+              └─► ready_for_funding   (law firm requests funding)
+                    └─► funder_review      (funder begins review)
+                          ├─► funded
+                          └─► rejected
+closed  (can be set at any stage)
+```
+
+---
+
+## Bill Processing Workflow
+
+Uploading a PDF triggers a synchronous pipeline that returns a fully-processed bill in the same response:
+
+```
+POST /api/cases/:id/bills/upload  (multipart PDF)
+        │
+        ▼
+1. Access check
+   — funder: blocked (403)
+   — provider / law_firm: must be assigned to the case
+        │
+        ▼
+2. Save PDF to uploads/ with UUID prefix
+   Prevents filename collisions across uploads
+        │
+        ▼
+3. Create MedicalBill record  (status: uploaded)
+   Advance case status: active → bills_uploaded on first upload
+        │
+        ▼
+4. TEXT EXTRACTION  (pdfplumber)
+   Extract all page text from the PDF
+        │
+        ├─ Regex parser (fast path)
+        │   Pattern: \b(CPT|HCPCS code)\b ... $amount at end of line
+        │   Handles clean, text-based PDFs where code and amount are on one line
+        │
+        └─ Claude Haiku fallback  (triggered when regex finds 0 items)
+            Sends full extracted text to claude-haiku-4-5-20251001
+            Prompt asks for JSON: [{code, description, quantity, billed_amount}]
+            Handles messy layouts: multi-column tables, code on separate line,
+            amounts without $ signs, mixed Rev/CPT/HCPCS formats
+        │
+        ▼
+5. RATE LOOKUP  (per line item — three-tier fallback)
+
+   a. Local DB  ──────────────────────────────────── instant, most common path
+      MedicareRate table, most recent year
+
+   b. Redis cache  ────────────────────────────────── avoids repeat CMS calls
+      Key: medicare_rate:<CODE>:<YEAR>
+      Stores JSON of rate record, or "NOT_FOUND" sentinel (24h TTL)
+      NOT_FOUND prevents hammering CMS for unknown codes
+
+   c. CMS API  (data.cms.gov — public, no key required)
+      Dataset: Medicare Physician & Other Practitioners by Geography and Service
+      Field used: Avg_Mdcr_Alowd_Amt (national average allowed amount)
+      On success → save to DB + cache in Redis
+      On failure → log warning, mark line item unmatched, never crash
+        │
+        ▼
+6. CALCULATIONS  (per line item)
+   medicare_allowed = rate × quantity
+   savings          = billed_amount − medicare_allowed
+   billing_ratio    = billed_amount / medicare_allowed
+   match_status     = matched | unmatched | low_confidence
+        │
+        ▼
+7. BILL AGGREGATION
+   total_billed_amount    = sum of all billed_amount
+   total_medicare_amount  = sum of all medicare_allowed_amount
+   total_savings          = total_billed − total_medicare
+   savings_percentage     = (total_savings / total_billed) × 100
+   average_billing_ratio  = mean ratio across matched line items
+        │
+        ▼
+8. CASE ROLLUP
+   Recompute case-level totals from all completed bills on the case
+
+9. Return completed bill in the upload response
+   bill.status = completed | failed
+   bill.error_message set if extraction or parsing failed
+```
+
+---
+
+## Caching
+
+Redis handles two caching concerns.
+
+### Session Cache
+
+```
+Key:   session:<token>
+Value: {"user_id": 1, "email": "...", "role": "law_firm", "organization_name": "..."}
+TTL:   SESSION_TTL_SECONDS  (default 86400 — 24 hours)
+```
+
+Every authenticated request reads this key. Logout deletes it immediately, invalidating the session server-side before the TTL expires. If Redis is unavailable, login is blocked (sessions are Redis-only by design).
+
+### Medicare Rate Cache
+
+```
+Key:   medicare_rate:<CODE>:<YEAR>
+Value: JSON of MedicareRate record  —or—  the string "NOT_FOUND"
+TTL:   RATE_CACHE_TTL_SECONDS  (default 86400 — 24 hours)
+```
+
+The `NOT_FOUND` sentinel is stored after a CMS miss so the same unknown code does not re-hit the CMS API on every bill upload within the TTL window. Once a code is fetched from CMS it is also persisted to the DB, so subsequent app restarts still have the rate without touching Redis or CMS again.
+
+If Redis is unavailable, rate lookups skip straight to the CMS API. `/api/health` reports `redis: unavailable` when degraded.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -46,13 +166,15 @@ Health check: `GET http://localhost:5001/api/health`
 
 All password: `Demo1234!`
 
-| Role | Email | Notes |
+| Role | Email | Org |
 |---|---|---|
-| Law Firm | `firm@medbill.demo` | Creates cases, requests funding |
-| Provider | `provider@medbill.demo` | Uploads bills to assigned cases |
-| Funder | `funder@medbill.demo` | Reviews and funds bills |
+| Law Firm | `firm@medbill.demo` | Smith Legal Group |
+| Provider | `provider@medbill.demo` | Riverside Medical Center |
+| Funder | `funder@medbill.demo` | MedFund Capital |
 
-**VIDEO-001** (Maria Gonzalez) is pre-created and assigned to all three video demo accounts.
+**VIDEO-001** (Maria Gonzalez) is pre-created and assigned to all three accounts. Use `sample_bills/messy_bill.pdf` to trigger the Claude extraction path.
+
+Additional test accounts: `henry@lawfirm.demo`, `provider1@demo.com`, `provider2@demo.com`, `alice@funder.demo`, `funder2@funder.demo`
 
 ---
 
@@ -67,124 +189,42 @@ All password: `Demo1234!`
 
 ---
 
-## Core Features
-
-### 1. Authentication
+## Authentication
 
 Sessions are stored in Redis, not JWTs.
 
-**Login flow:**
-1. `POST /api/auth/login` validates credentials against bcrypt hash
+1. `POST /api/auth/login` validates credentials against a bcrypt hash
 2. A secure random token (`secrets.token_urlsafe(32)`) is generated
-3. Session data (`user_id`, `email`, `role`, `organization_name`) is stored in Redis with a 24h TTL: `session:<token> → JSON`
+3. Session data is stored in Redis with a 24h TTL (see Caching above)
 4. The token is returned to the frontend and stored in `localStorage`
 5. Every API request sends `Authorization: Bearer <token>`
-
-**Auth decorators** (`backend/app.py`):
-- `@require_auth` — validates Bearer token, injects `session` dict into the route
-- `@require_role('law_firm', 'admin')` — validates role after auth check
-
-**Logout:** deletes the Redis key immediately, invalidating the session server-side.
+6. `@require_auth` validates the token on each request and injects the session dict into the route
+7. `@require_role('law_firm', 'admin')` enforces role checks after auth
 
 ---
 
-### 2. Authorization
+## Authorization
 
 Access control operates at two levels.
 
-**Role-based:** `@require_role(...)` on routes that only certain roles may call (e.g. only `law_firm` can create assignments, only `funder` can mark bills funded).
+**Route-level:** `@require_role(...)` blocks roles that may not call an endpoint at all (e.g. only `funder`/`admin` can mark bills funded).
 
-**Case-level access:** Every user can only see cases they are linked to:
+**Case-level:** Every user sees only cases they are linked to:
 
 ```
-law_firm  → cases where PatientCase.law_firm_id = user.id
-provider  → cases where CaseAssignment(case_id, user_id) exists
-funder    → cases where CaseAssignment(case_id, user_id) exists
-admin     → all cases
+law_firm  →  cases where PatientCase.law_firm_id = user.id
+provider  →  cases where CaseAssignment(case_id, user_id) exists
+funder    →  cases where CaseAssignment(case_id, user_id) exists
+admin     →  all cases
 ```
 
 The `CaseAssignment` table is the source of truth for provider/funder access. Law firms assign providers and funders via `POST /api/cases/:id/assignments`.
 
-Two helper functions enforce this everywhere:
-- `can_user_access_case(user_id, role, case)` — returns bool
-- `can_user_access_bill(user_id, role, bill)` — delegates to case check
+Bills inherit permissions from their parent case. Two helpers enforce this everywhere:
+- `can_user_access_case(user_id, role, case)` → bool
+- `can_user_access_bill(user_id, role, bill)` → delegates to case check
 
-Bills inherit their permissions from their parent case. A user who cannot see a case cannot see any of its bills either. Unauthorized access returns `404` (not `403`) to avoid confirming a resource exists.
-
----
-
-### 3. Bill Upload & Processing
-
-Uploading a bill triggers a synchronous pipeline:
-
-```
-POST /api/cases/:id/bills/upload  (multipart PDF)
-        │
-        ▼
-1. Access check — funder blocked, provider/law_firm must be assigned to case
-2. Save PDF to uploads/ with UUID prefix (prevents filename collisions)
-3. Create MedicalBill record (status: uploaded)
-4. Advance case status: active → bills_uploaded (first upload)
-        │
-        ▼
-5. pdfplumber extracts all page text
-        │
-        ├─ regex finds items?  ──→ use them
-        │   Pattern: \b(CPT|HCPCS code)\b ... $amount at end of line
-        │
-        └─ 0 items found ──→ Claude Haiku fallback
-            Send full text to claude-haiku-4-5-20251001
-            Returns JSON array of {code, description, quantity, billed_amount}
-        │
-        ▼
-6. For each line item: look up Medicare rate
-   Lookup chain:
-     a. Local DB (MedicareRate table) — instant
-     b. Redis cache (key: medicare_rate:<code>:<year>) — avoids repeat API calls
-     c. Live CMS API (data.cms.gov — public, no key) — fetches Avg_Mdcr_Alowd_Amt
-        On success: save to DB + cache in Redis (24h TTL)
-        On failure: cache NOT_FOUND sentinel, return unmatched
-        │
-        ▼
-7. Calculate per line item:
-   medicare_allowed = rate × quantity
-   savings          = billed - medicare_allowed
-   billing_ratio    = billed / medicare_allowed
-   match_status     = matched | unmatched
-        │
-        ▼
-8. Aggregate bill totals:
-   total_billed, total_medicare, total_savings, savings_percentage, avg_ratio
-9. Update case totals (rolls up all completed bills on the case)
-10. Return completed bill in the upload response
-```
-
-If any step fails after the file is saved, `bill.status` is set to `failed` and `bill.error_message` stores the reason. The app never crashes on a bad PDF.
-
----
-
-### 4. Caching
-
-Redis is used for two purposes: sessions and Medicare rate lookups.
-
-**Session cache**
-```
-Key:   session:<token>
-Value: {"user_id": 1, "email": "...", "role": "law_firm", "organization_name": "..."}
-TTL:   SESSION_TTL_SECONDS (default 86400 = 24h)
-```
-Checked on every authenticated request. Deleted on logout.
-
-**Medicare rate cache**
-```
-Key:   medicare_rate:<CODE>:<YEAR>
-Value: JSON of the MedicareRate record  (or the string "NOT_FOUND")
-TTL:   RATE_CACHE_TTL_SECONDS (default 86400 = 24h)
-```
-
-The NOT_FOUND sentinel prevents hammering the CMS API for unknown codes. Once a code is fetched from CMS it is also persisted to the DB, so subsequent restarts still have it without hitting Redis or CMS again.
-
-If Redis is unavailable the app degrades gracefully: sessions require DB-backed auth (which will fail if Redis is down since sessions are Redis-only), and rate lookups skip straight to the CMS API. `/api/health` reports `redis: unavailable` when degraded.
+Unauthorized access returns `404` (not `403`) to avoid confirming a resource exists.
 
 ---
 
@@ -209,7 +249,7 @@ If Redis is unavailable the app degrades gracefully: sessions require DB-backed 
 ### Assignments
 | Method | Path | Roles | Description |
 |---|---|---|---|
-| GET | `/api/cases/:id/assignments` | all | List case assignments |
+| GET | `/api/cases/:id/assignments` | all | List assignments |
 | POST | `/api/cases/:id/assignments` | law_firm, admin | Assign provider or funder |
 | DELETE | `/api/cases/:id/assignments/:aid` | law_firm, admin | Remove assignment |
 | GET | `/api/users?role=provider\|funder` | law_firm, admin | List assignable users |
@@ -222,13 +262,13 @@ If Redis is unavailable the app degrades gracefully: sessions require DB-backed 
 | GET | `/api/bills/:id` | all | Bill detail + line items |
 | GET | `/api/bills/:id/line-items` | all | Line items only |
 | POST | `/api/bills/:id/request-funding` | law_firm | Request funder review |
-| POST | `/api/bills/:id/mark-funded` | funder, admin | Approve funding |
+| POST | `/api/bills/:id/mark-funded` | funder, admin | Approve |
 | POST | `/api/bills/:id/reject-funding` | funder, admin | Reject with reason |
 
 ### Medicare Rates
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/medicare-rates/:code` | Lookup with DB→Redis→CMS fallback |
+| GET | `/api/medicare-rates/:code` | Lookup: DB → Redis → CMS |
 | POST | `/api/medicare-rates/sync-from-cms` | Refresh all DB rates from CMS |
 
 ### Other
@@ -237,21 +277,6 @@ If Redis is unavailable the app degrades gracefully: sessions require DB-backed 
 | GET | `/api/health` | DB + Redis status |
 | GET | `/api/dashboard/summary` | Role-scoped metrics |
 | POST | `/api/demo/seed` | Seed demo users and cases (dev only) |
-
----
-
-## Case Status Flow
-
-```
-active
-  └─► bills_uploaded      (first bill uploaded)
-        └─► provider_review   (law firm marks ready for provider)
-              └─► ready_for_funding  (law firm requests funding)
-                    └─► funder_review     (funder begins review)
-                          ├─► funded
-                          └─► rejected
-closed  (any stage)
-```
 
 ---
 
