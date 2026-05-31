@@ -5,13 +5,23 @@ import type { MedicalBill } from '@/types/billing'
 
 interface BillTableProps {
   bills: MedicalBill[]
+  userRole?: string
 }
 
-export default function BillTable({ bills }: BillTableProps) {
+const EMPTY: Record<string, string> = {
+  law_firm: 'No bills uploaded yet. Upload a bill from a case page.',
+  provider: 'No bills on your assigned cases yet.',
+  funder:   'No bills awaiting funding review on your assigned cases.',
+  admin:    'No bills in the system.',
+}
+
+export default function BillTable({ bills, userRole }: BillTableProps) {
   if (bills.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
-        <p className="text-sm text-gray-400">No bills uploaded yet.</p>
+        <p className="text-sm text-gray-400">
+          {EMPTY[userRole ?? ''] ?? 'No bills found.'}
+        </p>
       </div>
     )
   }

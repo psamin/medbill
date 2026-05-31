@@ -2,29 +2,26 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import Navbar from '@/components/Navbar'
+import AppShell from '@/components/AppShell'
 import BillTable from '@/components/BillTable'
 import { isAuthenticated, getUser } from '@/lib/auth'
 import { api } from '@/lib/api'
 import type { MedicalBill } from '@/types/billing'
 import type { User } from '@/types/auth'
 
-interface BillsResponse {
-  success: boolean
-  data: MedicalBill[]
-}
+interface BillsResponse { success: boolean; data: MedicalBill[] }
 
 const TITLE: Record<string, string> = {
-  law_firm: 'My Bills',
+  law_firm: 'Bills',
   funder:   'Funding Queue',
-  provider: 'My Uploads',
+  provider: 'Bills',
   admin:    'All Bills',
 }
 
 const SUBTITLE: Record<string, string> = {
   law_firm: 'All bills across your cases',
-  funder:   'Bills awaiting your funding review',
-  provider: 'Bills you have uploaded',
+  funder:   'Bills awaiting your review on your assigned cases',
+  provider: 'Bills on your assigned cases',
   admin:    'All bills in the system',
 }
 
@@ -38,42 +35,34 @@ export default function BillsPage() {
     try {
       const res = await api.get<BillsResponse>('/api/bills')
       setBills(res.data)
-    } catch (err) {
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
+    } catch (err) { console.error(err) }
+    finally { setLoading(false) }
   }, [])
 
   useEffect(() => {
     if (!isAuthenticated()) { router.push('/login'); return }
-    const u = getUser()
-    setUser(u)
+    const u = getUser(); setUser(u)
     fetchBills()
   }, [router, fetchBills])
 
   const role = user?.role ?? 'law_firm'
 
   return (
-    <>
-      <Navbar />
-      <main className="min-h-screen bg-gray-50 p-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-2xl font-bold text-gray-900">{TITLE[role]}</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              {!loading && `${bills.length} bill${bills.length !== 1 ? 's' : ''} · `}
-              {SUBTITLE[role]}
-            </p>
-          </div>
-
-          {loading ? (
-            <div className="text-center py-12 text-sm text-gray-400">Loading…</div>
-          ) : (
-            <BillTable bills={bills} />
-          )}
+    <AppShell>
+      <main className="p-8">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">{TITLE[role]}</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            {!loading && `${bills.length} bill${bills.length !== 1 ? 's' : ''} · `}
+            {SUBTITLE[role]}
+          </p>
         </div>
+        {loading ? (
+          <div className="text-center py-12 text-sm text-gray-400">Loading…</div>
+        ) : (
+          <BillTable bills={bills} userRole={user?.role} />
+        )}
       </main>
-    </>
+    </AppShell>
   )
 }

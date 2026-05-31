@@ -5,13 +5,23 @@ import type { PatientCase } from '@/types/cases'
 
 interface CaseTableProps {
   cases: PatientCase[]
+  userRole?: string
 }
 
-export default function CaseTable({ cases }: CaseTableProps) {
+const EMPTY: Record<string, string> = {
+  law_firm: 'No cases yet. Create your first case to get started.',
+  provider: 'You haven\'t been assigned to any cases yet. Your law firm partner will assign cases when ready.',
+  funder:   'No cases have been assigned to your funding queue yet.',
+  admin:    'No cases in the system.',
+}
+
+export default function CaseTable({ cases, userRole }: CaseTableProps) {
   if (cases.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
-        <p className="text-sm text-gray-400">No cases yet. Create one to get started.</p>
+        <p className="text-sm text-gray-400">
+          {EMPTY[userRole ?? ''] ?? 'No cases found.'}
+        </p>
       </div>
     )
   }

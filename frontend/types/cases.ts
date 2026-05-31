@@ -1,9 +1,13 @@
 export type CaseStatus =
   | 'active'
-  | 'reviewing_bills'
+  | 'bills_uploaded'
+  | 'provider_review'
   | 'ready_for_funding'
+  | 'funder_review'
   | 'funded'
+  | 'rejected'
   | 'closed'
+  | 'reviewing_bills' // legacy
 
 export interface PatientCase {
   id: number

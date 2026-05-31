@@ -42,6 +42,9 @@ export const api = {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     }),
 
+  delete: <T>(path: string) =>
+    request<T>(path, { method: 'DELETE' }),
+
   upload: async <T>(path: string, formData: FormData): Promise<T> => {
     const token = getToken()
     const headers: Record<string, string> = {}

@@ -92,7 +92,7 @@ class PatientCase(db.Model):
     patient_name = db.Column(db.String(255), nullable=False)
     case_number = db.Column(db.String(100), unique=True, nullable=False)
     law_firm_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    # active | reviewing_bills | ready_for_funding | funded | closed
+    # active|bills_uploaded|provider_review|ready_for_funding|funder_review|funded|rejected|closed
     status = db.Column(db.String(50), default='active', nullable=False)
     total_billed_amount = db.Column(Numeric(12, 2), default=0)
     total_medicare_amount = db.Column(Numeric(12, 2), default=0)
@@ -102,6 +102,8 @@ class PatientCase(db.Model):
                            onupdate=datetime.utcnow, nullable=False)
 
     bills = db.relationship('MedicalBill', backref='case', lazy=True)
+    assignments = db.relationship('CaseAssignment', backref='case',
+                                  lazy=True, foreign_keys='CaseAssignment.case_id')
 
     def to_dict(self):
         return {
@@ -248,6 +250,37 @@ class MedicareRate(db.Model):
         }
 
 
+class CaseAssignment(db.Model):
+    __tablename__ = 'case_assignments'
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey('patient_cases.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    # 'provider' | 'funder'
+    role_on_case = db.Column(db.String(50), nullable=False)
+    assigned_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    assignee = db.relationship('User', foreign_keys=[user_id])
+    assigned_by = db.relationship('User', foreign_keys=[assigned_by_user_id])
+
+    __table_args__ = (
+        db.UniqueConstraint('case_id', 'user_id', name='uq_case_assignment'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'case_id': self.case_id,
+            'user_id': self.user_id,
+            'role_on_case': self.role_on_case,
+            'assigned_by_user_id': self.assigned_by_user_id,
+            'created_at': self.created_at.isoformat(),
+            'user_email': self.assignee.email if self.assignee else None,
+            'user_org': self.assignee.organization_name if self.assignee else None,
+        }
+
+
 # =============================================================================
 # 6. HELPER FUNCTIONS
 # =============================================================================
@@ -267,6 +300,28 @@ def error_response(message, status_code=400):
 
 def ensure_upload_dir():
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+def can_user_access_case(user_id: int, role: str, case: 'PatientCase') -> bool:
+    """Returns True if the user may read or act on this case."""
+    if role == 'admin':
+        return True
+    if role == 'law_firm':
+        return case.law_firm_id == user_id
+    # provider and funder — must be explicitly assigned
+    return db.session.query(CaseAssignment).filter_by(
+        case_id=case.id, user_id=user_id
+    ).first() is not None
+
+
+def can_user_access_bill(user_id: int, role: str, bill: 'MedicalBill') -> bool:
+    """Bill access is derived from case access."""
+    if role == 'admin':
+        return True
+    case = db.session.get(PatientCase, bill.case_id)
+    if not case:
+        return False
+    return can_user_access_case(user_id, role, case)
 
 
 # Matches: <CPT or HCPCS code>  <description text>  $<amount>
@@ -799,7 +854,17 @@ def me(session):
 # 9. CASE ROUTES
 # =============================================================================
 
-VALID_STATUSES = ('active', 'reviewing_bills', 'ready_for_funding', 'funded', 'closed')
+VALID_STATUSES = (
+    'active',
+    'bills_uploaded',
+    'provider_review',
+    'ready_for_funding',
+    'funder_review',
+    'funded',
+    'rejected',
+    'closed',
+    'reviewing_bills',  # legacy compat
+)
 
 
 @app.route('/api/cases', methods=['POST'])
@@ -830,16 +895,18 @@ def list_cases(session):
     role = session['role']
     user_id = session['user_id']
 
-    if role == 'law_firm':
-        cases = PatientCase.query.filter_by(law_firm_id=user_id)
-    elif role == 'funder':
+    if role == 'admin':
+        cases = PatientCase.query.order_by(PatientCase.created_at.desc()).all()
+    elif role == 'law_firm':
+        cases = PatientCase.query.filter_by(
+            law_firm_id=user_id
+        ).order_by(PatientCase.created_at.desc()).all()
+    else:  # provider or funder — only assigned cases
+        assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
         cases = PatientCase.query.filter(
-            PatientCase.status.in_(['ready_for_funding', 'funded'])
-        )
-    else:  # provider, admin
-        cases = PatientCase.query
+            PatientCase.id.in_(assigned_ids)
+        ).order_by(PatientCase.created_at.desc()).all()
 
-    cases = cases.order_by(PatientCase.created_at.desc()).all()
     return success_response(data=[c.to_dict() for c in cases])
 
 
@@ -849,12 +916,12 @@ def get_case(case_id, session):
     case = db.session.get(PatientCase, case_id)
     if not case:
         return error_response('Case not found', 404)
-
-    if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
+    if not can_user_access_case(session['user_id'], session['role'], case):
         return error_response('Case not found', 404)
 
     case_data = case.to_dict()
     case_data['bills'] = [b.to_dict() for b in case.bills]
+    case_data['assignments'] = [a.to_dict() for a in case.assignments]
     return success_response(data=case_data)
 
 
@@ -865,10 +932,9 @@ def update_case(case_id, session):
     if not case:
         return error_response('Case not found', 404)
 
-    role = session['role']
-    if role == 'law_firm' and case.law_firm_id != session['user_id']:
+    if not can_user_access_case(session['user_id'], session['role'], case):
         return error_response('Forbidden', 403)
-    if role not in ('law_firm', 'admin'):
+    if session['role'] not in ('law_firm', 'admin'):
         return error_response('Forbidden', 403)
 
     data = request.get_json(silent=True) or {}
@@ -912,7 +978,7 @@ def upload_bill(case_id, session):
     role = session['role']
     if role == 'funder':
         return error_response('Funders cannot upload bills', 403)
-    if role == 'law_firm' and case.law_firm_id != session['user_id']:
+    if not can_user_access_case(session['user_id'], role, case):
         return error_response('Forbidden', 403)
 
     if 'file' not in request.files:
@@ -924,6 +990,12 @@ def upload_bill(case_id, session):
         return error_response('Only PDF files are allowed')
 
     provider_name = (request.form.get('provider_name') or '').strip() or None
+    # Auto-populate provider name from uploader's org if they are a provider
+    if not provider_name and role == 'provider':
+        provider_name = session.get('organization_name') or None
+    # Advance case status on first upload
+    if case.status == 'active':
+        case.status = 'bills_uploaded'
     original_filename = secure_filename(file.filename)
     stored_filename = f"{uuid.uuid4().hex}_{original_filename}"
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
@@ -952,22 +1024,25 @@ def list_bills(session):
     role = session['role']
     user_id = session['user_id']
 
-    if role == 'law_firm':
+    if role == 'admin':
+        bills = MedicalBill.query.order_by(MedicalBill.created_at.desc()).all()
+    elif role == 'law_firm':
         bills = (
             MedicalBill.query
             .join(PatientCase)
             .filter(PatientCase.law_firm_id == user_id)
+            .order_by(MedicalBill.created_at.desc())
+            .all()
         )
-    elif role == 'provider':
-        bills = MedicalBill.query.filter_by(uploaded_by_id=user_id)
-    elif role == 'funder':
-        bills = MedicalBill.query.filter(
-            MedicalBill.funding_status.in_(['funding_requested', 'under_review'])
+    else:  # provider or funder — bills on assigned cases only
+        assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
+        bills = (
+            MedicalBill.query
+            .filter(MedicalBill.case_id.in_(assigned_ids))
+            .order_by(MedicalBill.created_at.desc())
+            .all()
         )
-    else:  # admin
-        bills = MedicalBill.query
 
-    bills = bills.order_by(MedicalBill.created_at.desc()).all()
     return success_response(data=[b.to_dict() for b in bills])
 
 
@@ -978,11 +1053,7 @@ def get_bill(bill_id, session):
     if not bill:
         return error_response('Bill not found', 404)
 
-    role = session['role']
-    user_id = session['user_id']
-    if role == 'law_firm' and bill.case.law_firm_id != user_id:
-        return error_response('Bill not found', 404)
-    if role == 'provider' and bill.uploaded_by_id != user_id:
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
         return error_response('Bill not found', 404)
 
     bill_data = bill.to_dict()
@@ -997,11 +1068,7 @@ def get_bill_line_items(bill_id, session):
     if not bill:
         return error_response('Bill not found', 404)
 
-    role = session['role']
-    user_id = session['user_id']
-    if role == 'law_firm' and bill.case.law_firm_id != user_id:
-        return error_response('Bill not found', 404)
-    if role == 'provider' and bill.uploaded_by_id != user_id:
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
         return error_response('Bill not found', 404)
 
     return success_response(data=[li.to_dict() for li in bill.line_items])
@@ -1016,7 +1083,7 @@ def request_funding(bill_id, session):
 
     if session['role'] != 'law_firm':
         return error_response('Only law firms can request funding', 403)
-    if bill.case.law_firm_id != session['user_id']:
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
         return error_response('Forbidden', 403)
     if bill.status != 'completed':
         return error_response('Bill must be fully processed before requesting funding')
@@ -1036,6 +1103,8 @@ def mark_funded(bill_id, session):
     bill = db.session.get(MedicalBill, bill_id)
     if not bill:
         return error_response('Bill not found', 404)
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
+        return error_response('Bill not found', 404)
     if bill.funding_status not in ('funding_requested', 'under_review'):
         return error_response(f'Bill is not awaiting review (status: {bill.funding_status})')
 
@@ -1051,6 +1120,8 @@ def reject_funding(bill_id, session):
     bill = db.session.get(MedicalBill, bill_id)
     if not bill:
         return error_response('Bill not found', 404)
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
+        return error_response('Bill not found', 404)
     if bill.funding_status not in ('funding_requested', 'under_review'):
         return error_response(f'Bill is not awaiting review (status: {bill.funding_status})')
 
@@ -1062,6 +1133,92 @@ def reject_funding(bill_id, session):
     bill.updated_at = datetime.utcnow()
     db.session.commit()
     return success_response(data=bill.to_dict(), message='Funding rejected')
+
+
+# =============================================================================
+# 10.5  ASSIGNMENT ROUTES
+# =============================================================================
+
+@app.route('/api/cases/<int:case_id>/assignments', methods=['GET'])
+@require_auth
+def list_case_assignments(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if not can_user_access_case(session['user_id'], session['role'], case):
+        return error_response('Forbidden', 403)
+    return success_response(data=[a.to_dict() for a in case.assignments])
+
+
+@app.route('/api/cases/<int:case_id>/assignments', methods=['POST'])
+@require_role('law_firm', 'admin')
+def create_assignment(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
+        return error_response('Forbidden', 403)
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    role_on_case = data.get('role_on_case')
+
+    if not user_id or not role_on_case:
+        return error_response('user_id and role_on_case are required')
+    if role_on_case not in ('provider', 'funder'):
+        return error_response('role_on_case must be provider or funder')
+
+    target = db.session.get(User, user_id)
+    if not target:
+        return error_response('User not found', 404)
+    if target.role != role_on_case:
+        return error_response(
+            f'User role ({target.role}) does not match role_on_case ({role_on_case})'
+        )
+
+    existing = CaseAssignment.query.filter_by(case_id=case_id, user_id=user_id).first()
+    if existing:
+        return success_response(data=existing.to_dict(), message='Already assigned')
+
+    assignment = CaseAssignment(
+        case_id=case_id,
+        user_id=user_id,
+        role_on_case=role_on_case,
+        assigned_by_user_id=session['user_id'],
+    )
+    db.session.add(assignment)
+    db.session.commit()
+    return success_response(data=assignment.to_dict(), status_code=201)
+
+
+@app.route('/api/cases/<int:case_id>/assignments/<int:assignment_id>', methods=['DELETE'])
+@require_role('law_firm', 'admin')
+def delete_assignment(case_id, assignment_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
+        return error_response('Forbidden', 403)
+
+    assignment = CaseAssignment.query.filter_by(id=assignment_id, case_id=case_id).first()
+    if not assignment:
+        return error_response('Assignment not found', 404)
+
+    db.session.delete(assignment)
+    db.session.commit()
+    return success_response(message='Assignment removed')
+
+
+@app.route('/api/users', methods=['GET'])
+@require_role('law_firm', 'admin')
+def list_assignable_users(session):
+    """Returns providers and funders for the assignment dropdown."""
+    role_filter = request.args.get('role')
+    query = User.query.filter(User.role.in_(['provider', 'funder']))
+    if role_filter in ('provider', 'funder'):
+        query = query.filter_by(role=role_filter)
+    users = query.order_by(User.organization_name).all()
+    return success_response(data=[u.to_dict() for u in users])
 
 
 # =============================================================================
@@ -1138,18 +1295,17 @@ def dashboard_summary(session):
     role = session['role']
     user_id = session['user_id']
 
-    if role == 'law_firm':
-        cases = PatientCase.query.filter_by(law_firm_id=user_id).all()
-    elif role == 'funder':
-        cases = PatientCase.query.filter(
-            PatientCase.status.in_(['ready_for_funding', 'funded'])
-        ).all()
-    else:
+    if role == 'admin':
         cases = PatientCase.query.all()
+    elif role == 'law_firm':
+        cases = PatientCase.query.filter_by(law_firm_id=user_id).all()
+    else:  # provider or funder — only assigned cases
+        assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
+        cases = PatientCase.query.filter(PatientCase.id.in_(assigned_ids)).all()
 
-    total_billed  = sum(Decimal(str(c.total_billed_amount  or 0)) for c in cases)
+    total_billed   = sum(Decimal(str(c.total_billed_amount   or 0)) for c in cases)
     total_medicare = sum(Decimal(str(c.total_medicare_amount or 0)) for c in cases)
-    total_savings  = sum(Decimal(str(c.total_savings        or 0)) for c in cases)
+    total_savings  = sum(Decimal(str(c.total_savings         or 0)) for c in cases)
 
     status_counts: dict = {}
     for c in cases:
@@ -1163,15 +1319,37 @@ def dashboard_summary(session):
         'status_counts':  status_counts,
     }
 
-    # Funding queue counts — relevant for every role
-    if role in ('funder', 'admin'):
-        data['pending_review'] = MedicalBill.query.filter(
-            MedicalBill.funding_status.in_(['funding_requested', 'under_review'])
-        ).count()
-    elif role == 'law_firm':
+    if role == 'law_firm':
         data['bills_awaiting_funder'] = MedicalBill.query.join(PatientCase).filter(
             PatientCase.law_firm_id == user_id,
             MedicalBill.funding_status == 'funding_requested',
+        ).count()
+        data['active_cases'] = sum(1 for c in cases if c.status == 'active')
+        data['ready_for_funding'] = sum(
+            1 for c in cases if c.status == 'ready_for_funding'
+        )
+
+    elif role == 'provider':
+        data['my_bills_count'] = MedicalBill.query.filter_by(
+            uploaded_by_id=user_id
+        ).count()
+        data['bills_pending_review'] = MedicalBill.query.filter_by(
+            uploaded_by_id=user_id, status='uploaded'
+        ).count()
+
+    elif role == 'funder':
+        assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
+        data['pending_review'] = MedicalBill.query.filter(
+            MedicalBill.case_id.in_(assigned_ids),
+            MedicalBill.funding_status.in_(['funding_requested', 'under_review']),
+        ).count()
+        data['ready_for_funding'] = sum(
+            1 for c in cases if c.status in ('ready_for_funding', 'funder_review')
+        )
+
+    elif role == 'admin':
+        data['pending_review'] = MedicalBill.query.filter(
+            MedicalBill.funding_status.in_(['funding_requested', 'under_review'])
         ).count()
 
     return success_response(data=data)
@@ -1208,6 +1386,84 @@ def health():
 
     http_status = 200 if status['status'] == 'ok' else 503
     return jsonify(status), http_status
+
+
+# =============================================================================
+# 13.5  DEMO SEED ROUTE
+# =============================================================================
+
+@app.route('/api/demo/seed', methods=['POST'])
+def seed_demo():
+    """Idempotent demo data seed. Only available in development."""
+    if os.getenv('FLASK_ENV') != 'development':
+        return error_response('Not available', 404)
+
+    DEMO_USERS = [
+        {'email': 'henry@lawfirm.demo',   'password': 'Demo1234!', 'role': 'law_firm',  'org': 'Henry & Associates'},
+        {'email': 'provider1@demo.com',    'password': 'Demo1234!', 'role': 'provider',  'org': 'City General Hospital'},
+        {'email': 'provider2@demo.com',    'password': 'Demo1234!', 'role': 'provider',  'org': 'Metro Orthopedics'},
+        {'email': 'alice@funder.demo',     'password': 'Demo1234!', 'role': 'funder',    'org': 'Alice Capital'},
+        {'email': 'funder2@funder.demo',   'password': 'Demo1234!', 'role': 'funder',    'org': 'Second Fund LLC'},
+    ]
+    users: dict = {}
+    for u in DEMO_USERS:
+        obj = User.query.filter_by(email=u['email']).first()
+        if not obj:
+            obj = User(
+                email=u['email'],
+                password_hash=generate_password_hash(u['password']),
+                role=u['role'],
+                organization_name=u['org'],
+            )
+            db.session.add(obj)
+            db.session.flush()
+        users[u['email']] = obj
+
+    henry = users['henry@lawfirm.demo']
+    DEMO_CASES = [
+        {'patient_name': 'John Smith',  'case_number': 'DEMO-001', 'status': 'ready_for_funding'},
+        {'patient_name': 'Jane Doe',    'case_number': 'DEMO-002', 'status': 'provider_review'},
+        {'patient_name': 'Bob Johnson', 'case_number': 'DEMO-003', 'status': 'active'},
+    ]
+    cases: dict = {}
+    for c in DEMO_CASES:
+        obj = PatientCase.query.filter_by(case_number=c['case_number']).first()
+        if not obj:
+            obj = PatientCase(
+                patient_name=c['patient_name'],
+                case_number=c['case_number'],
+                law_firm_id=henry.id,
+                status=c['status'],
+            )
+            db.session.add(obj)
+            db.session.flush()
+        cases[c['case_number']] = obj
+
+    ASSIGNMENTS = [
+        ('DEMO-001', 'alice@funder.demo',    'funder'),
+        ('DEMO-001', 'provider1@demo.com',   'provider'),
+        ('DEMO-002', 'provider2@demo.com',   'provider'),
+        ('DEMO-002', 'alice@funder.demo',    'funder'),
+        ('DEMO-003', 'provider1@demo.com',   'provider'),
+        ('DEMO-003', 'funder2@funder.demo',  'funder'),
+    ]
+    for case_num, user_email, role_on_case in ASSIGNMENTS:
+        case = cases[case_num]
+        user = users[user_email]
+        if not CaseAssignment.query.filter_by(case_id=case.id, user_id=user.id).first():
+            db.session.add(CaseAssignment(
+                case_id=case.id,
+                user_id=user.id,
+                role_on_case=role_on_case,
+                assigned_by_user_id=henry.id,
+            ))
+
+    db.session.commit()
+    return success_response(
+        data={'users': [u.to_dict() for u in users.values()]},
+        message='Demo data seeded — password for all: Demo1234!',
+        status_code=201,
+    )
 
 
 # =============================================================================
