@@ -78,8 +78,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-gray-50">
-      {/* Sidebar */}
-      <aside className="w-56 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
+      {/* Sidebar — sticky full-height, never scrolls */}
+      <aside className="w-56 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 sticky top-0 h-screen">
         {/* Brand */}
         <div className="px-5 py-5 border-b border-gray-100">
           <Link href="/dashboard" className="text-lg font-bold text-gray-900 tracking-tight">
