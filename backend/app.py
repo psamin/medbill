@@ -1399,11 +1399,16 @@ def seed_demo():
         return error_response('Not available', 404)
 
     DEMO_USERS = [
-        {'email': 'henry@lawfirm.demo',   'password': 'Demo1234!', 'role': 'law_firm',  'org': 'Henry & Associates'},
-        {'email': 'provider1@demo.com',    'password': 'Demo1234!', 'role': 'provider',  'org': 'City General Hospital'},
-        {'email': 'provider2@demo.com',    'password': 'Demo1234!', 'role': 'provider',  'org': 'Metro Orthopedics'},
-        {'email': 'alice@funder.demo',     'password': 'Demo1234!', 'role': 'funder',    'org': 'Alice Capital'},
-        {'email': 'funder2@funder.demo',   'password': 'Demo1234!', 'role': 'funder',    'org': 'Second Fund LLC'},
+        # Existing demo users
+        {'email': 'henry@lawfirm.demo',      'password': 'Demo1234!', 'role': 'law_firm',  'org': 'Henry & Associates'},
+        {'email': 'provider1@demo.com',       'password': 'Demo1234!', 'role': 'provider',  'org': 'City General Hospital'},
+        {'email': 'provider2@demo.com',       'password': 'Demo1234!', 'role': 'provider',  'org': 'Metro Orthopedics'},
+        {'email': 'alice@funder.demo',        'password': 'Demo1234!', 'role': 'funder',    'org': 'Alice Capital'},
+        {'email': 'funder2@funder.demo',      'password': 'Demo1234!', 'role': 'funder',    'org': 'Second Fund LLC'},
+        # Video demo users — clean credentials for recording
+        {'email': 'firm@medbill.demo',        'password': 'Demo1234!', 'role': 'law_firm',  'org': 'Smith Legal Group'},
+        {'email': 'provider@medbill.demo',    'password': 'Demo1234!', 'role': 'provider',  'org': 'Riverside Medical Center'},
+        {'email': 'funder@medbill.demo',      'password': 'Demo1234!', 'role': 'funder',    'org': 'MedFund Capital'},
     ]
     users: dict = {}
     for u in DEMO_USERS:
@@ -1420,10 +1425,15 @@ def seed_demo():
         users[u['email']] = obj
 
     henry = users['henry@lawfirm.demo']
+    firm  = users['firm@medbill.demo']
+
     DEMO_CASES = [
-        {'patient_name': 'John Smith',  'case_number': 'DEMO-001', 'status': 'ready_for_funding'},
-        {'patient_name': 'Jane Doe',    'case_number': 'DEMO-002', 'status': 'provider_review'},
-        {'patient_name': 'Bob Johnson', 'case_number': 'DEMO-003', 'status': 'active'},
+        # Existing cases (owned by henry)
+        {'patient_name': 'John Smith',     'case_number': 'DEMO-001', 'status': 'ready_for_funding', 'owner': henry},
+        {'patient_name': 'Jane Doe',       'case_number': 'DEMO-002', 'status': 'provider_review',   'owner': henry},
+        {'patient_name': 'Bob Johnson',    'case_number': 'DEMO-003', 'status': 'active',            'owner': henry},
+        # Video demo case — starts clean for recording
+        {'patient_name': 'Maria Gonzalez', 'case_number': 'VIDEO-001', 'status': 'active',           'owner': firm},
     ]
     cases: dict = {}
     for c in DEMO_CASES:
@@ -1432,7 +1442,7 @@ def seed_demo():
             obj = PatientCase(
                 patient_name=c['patient_name'],
                 case_number=c['case_number'],
-                law_firm_id=henry.id,
+                law_firm_id=c['owner'].id,
                 status=c['status'],
             )
             db.session.add(obj)
@@ -1440,27 +1450,39 @@ def seed_demo():
         cases[c['case_number']] = obj
 
     ASSIGNMENTS = [
-        ('DEMO-001', 'alice@funder.demo',    'funder'),
-        ('DEMO-001', 'provider1@demo.com',   'provider'),
-        ('DEMO-002', 'provider2@demo.com',   'provider'),
-        ('DEMO-002', 'alice@funder.demo',    'funder'),
-        ('DEMO-003', 'provider1@demo.com',   'provider'),
-        ('DEMO-003', 'funder2@funder.demo',  'funder'),
+        # Existing assignments
+        ('DEMO-001', 'alice@funder.demo',       'funder'),
+        ('DEMO-001', 'provider1@demo.com',      'provider'),
+        ('DEMO-002', 'provider2@demo.com',      'provider'),
+        ('DEMO-002', 'alice@funder.demo',       'funder'),
+        ('DEMO-003', 'provider1@demo.com',      'provider'),
+        ('DEMO-003', 'funder2@funder.demo',     'funder'),
+        # Video demo assignments
+        ('VIDEO-001', 'provider@medbill.demo',  'provider'),
+        ('VIDEO-001', 'funder@medbill.demo',    'funder'),
     ]
     for case_num, user_email, role_on_case in ASSIGNMENTS:
         case = cases[case_num]
         user = users[user_email]
+        owner = firm if case_num == 'VIDEO-001' else henry
         if not CaseAssignment.query.filter_by(case_id=case.id, user_id=user.id).first():
             db.session.add(CaseAssignment(
                 case_id=case.id,
                 user_id=user.id,
                 role_on_case=role_on_case,
-                assigned_by_user_id=henry.id,
+                assigned_by_user_id=owner.id,
             ))
 
     db.session.commit()
     return success_response(
-        data={'users': [u.to_dict() for u in users.values()]},
+        data={
+            'video_demo': {
+                'law_firm':  {'email': 'firm@medbill.demo',     'password': 'Demo1234!', 'org': 'Smith Legal Group'},
+                'provider':  {'email': 'provider@medbill.demo', 'password': 'Demo1234!', 'org': 'Riverside Medical Center'},
+                'funder':    {'email': 'funder@medbill.demo',   'password': 'Demo1234!', 'org': 'MedFund Capital'},
+                'case':      'VIDEO-001 — Maria Gonzalez (active)',
+            },
+        },
         message='Demo data seeded — password for all: Demo1234!',
         status_code=201,
     )
