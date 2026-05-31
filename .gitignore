@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+backend/venv/
+venv/
+
+# Environment files — NEVER commit these (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# SQLite database
+backend/instance/*.db
+
+# Uploaded PDFs (potentially sensitive patient data)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Redis dump
+dump.rdb
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.pnp
+frontend/.pnp.js
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

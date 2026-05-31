@@ -1,0 +1,68 @@
+%PDF-1.4
+1 0 obj
+<</Type /Catalog /Pages 2 0 R>>
+endobj
+2 0 obj
+<</Type /Pages /Kids [3 0 R] /Count 1>>
+endobj
+3 0 obj
+<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources <</Font <</F1 5 0 R>>>> /Contents 4 0 R>>
+endobj
+4 0 obj
+<</Length 1506>>
+stream
+BT
+/F1 9 Tf
+50 750 Td
+12 TL
+(RIVERSIDE MEDICAL CENTER) Tj T*
+(Patient Billing Statement) Tj T*
+(===============================================) Tj T*
+(Acct: RMC-2024-88312        Date: 04/22/2024) Tj T*
+(Patient: Maria Gonzalez     DOB: 06/14/1972) Tj T*
+(Insurance: Blue Cross       Group: BCX-4421) Tj T*
+(===============================================) Tj T*
+(CHARGES SUMMARY) Tj T*
+(Date       Service Description) Tj T*
+(           Proc  Rev  Qty   Charge) Tj T*
+(-----------------------------------------------) Tj T*
+(04/22      EMERGENCY DEPT VISIT - LEVEL 4) Tj T*
+(           99284  045   1    785.00) Tj T*
+(04/22      COMPREHENSIVE METABOLIC PANEL) Tj T*
+(           80053  030   1    210.50) Tj T*
+(04/22      CBC WITH DIFFERENTIAL) Tj T*
+(           85025  030   1    185.00) Tj T*
+(04/22      CHEST X-RAY 2 VIEWS) Tj T*
+(           71046  032   1    420.00) Tj T*
+(04/22      IV INFUSION THERAPY - INITIAL HR) Tj T*
+(           96365  026   1    325.00) Tj T*
+(04/22      SODIUM CHLORIDE 0.9% 1000ML) Tj T*
+(           J7030  026   2    48.00) Tj T*
+(04/22      ONDANSETRON INJ 4MG \(ZOFRAN\)) Tj T*
+(           J2405  025   1    62.00) Tj T*
+(04/22      TROPONIN I QUANTITATIVE) Tj T*
+(           84484  030   1    290.00) Tj T*
+(04/22      ECG ROUTINE W/ INTERPRETATION) Tj T*
+(           93000  073   1    155.00) Tj T*
+(-----------------------------------------------) Tj T*
+(                  TOTAL CHARGES:   2,480.50) Tj T*
+(===============================================) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<</Type /Font /Subtype /Type1 /BaseFont /Courier>>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000056 00000 n 
+0000000111 00000 n 
+0000000231 00000 n 
+0000001787 00000 n 
+trailer
+<</Size 6 /Root 1 0 R>>
+startxref
+1853
+%%EOF
