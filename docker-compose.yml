@@ -1,0 +1,38 @@
+services:
+  redis:
+    image: redis:7
+    container_name: medbill-redis
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: medbill-backend
+    ports:
+      - "5001:8080"
+    environment:
+      - SECRET_KEY=change-this-secret
+      - REDIS_URL=redis://redis:6379
+      - ANTHROPIC_API_KEY=replace-with-real-key-on-vm-only
+      - FRONTEND_URL=http://34.171.216.159
+      - CLAUDE_EXTRACTION_MODEL=claude-haiku-4-5-20251001
+      - FUNDER_MEDICARE_MULTIPLIER=1.60
+      - LAW_FIRM_SPREAD_PERCENT=0.60
+      - DEFAULT_NEGOTIATED_RATE_MULTIPLIER=1.00
+    depends_on:
+      - redis
+
+  frontend:
+    image: node:20-alpine
+    container_name: medbill-frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://backend:8080
+    command: sh -c "npm run dev -- -H 0.0.0.0 --webpack"
+    depends_on:
+      - backend

@@ -1,10 +1,13 @@
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # System deps for pdfplumber
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpoppler-cpp-dev \
+    gcc \
+    build-essential \
+    libpq-dev \
+    libpoppler-cpp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -19,4 +22,4 @@ EXPOSE 8080
 
 # Cloud Run injects PORT at runtime; default to 8080 for local docker runs
 ENV PORT=8080
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 app:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 app:app"]
