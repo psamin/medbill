@@ -49,7 +49,10 @@ export default function FundingBatchesPage() {
 
   const filtered = statusFilter === 'all' ? batches : batches.filter(b => b.status === statusFilter)
   const pendingCount = batches.filter(b => ['submitted', 'funder_review'].includes(b.status)).length
-  const isFunder = user?.role === 'funder' || user?.role === 'admin'
+  const isFunder    = user?.role === 'funder' || user?.role === 'admin'
+  const isProvider  = user?.role === 'provider'
+  const isLawFirm   = user?.role === 'law_firm' || user?.role === 'admin'
+  const showFunderAmount = !isProvider
 
   return (
     <AppShell>
@@ -110,9 +113,12 @@ export default function FundingBatchesPage() {
                   <th className="px-5 py-3 font-medium text-gray-500">Status</th>
                   <th className="px-5 py-3 font-medium text-gray-500">Provider</th>
                   {!isFunder && <th className="px-5 py-3 font-medium text-gray-500">Funder</th>}
-                  <th className="px-5 py-3 font-medium text-gray-500 text-right">Medicare Allowed</th>
-                  <th className="px-5 py-3 font-medium text-gray-500 text-right">Funder Funding</th>
-                  {(user?.role === 'law_firm' || user?.role === 'admin') && (
+                  <th className="px-5 py-3 font-medium text-gray-500 text-right">Medicare Benchmark</th>
+                  {showFunderAmount
+                    ? <th className="px-5 py-3 font-medium text-gray-500 text-right">Funder Funding</th>
+                    : <th className="px-5 py-3 font-medium text-gray-500 text-right">Provider Payout</th>
+                  }
+                  {isLawFirm && (
                     <th className="px-5 py-3 font-medium text-gray-500 text-right">LF Spread</th>
                   )}
                   <th className="px-5 py-3 font-medium text-gray-500">Created</th>
@@ -139,8 +145,11 @@ export default function FundingBatchesPage() {
                     <td className="px-5 py-3 text-gray-600 text-sm">{batch.provider_org ?? '—'}</td>
                     {!isFunder && <td className="px-5 py-3 text-gray-600 text-sm">{batch.assigned_funder_org ?? <span className="italic text-gray-400">Unassigned</span>}</td>}
                     <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
-                    {(user?.role === 'law_firm' || user?.role === 'admin') && (
+                    {showFunderAmount
+                      ? <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                      : <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
+                    }
+                    {isLawFirm && (
                       <td className="px-5 py-3 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>
                     )}
                     <td className="px-5 py-3 text-gray-400 text-xs">{formatDate(batch.created_at)}</td>

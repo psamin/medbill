@@ -13,13 +13,18 @@ import type { PatientCase } from '@/types/cases'
 interface Summary {
   total_cases: number
   active_cases: number
+  closed_cases: number
   ready_for_funding: number
   bills_awaiting_funder: number
+  bills_uploaded: number
   draft_batches: number
   submitted_batches: number
   funded_batches: number
   total_billed: string
   total_savings: string
+  total_law_firm_spread: string
+  total_funder_funding: string
+  total_provider_payout: string
 }
 
 interface Props { user: User }
@@ -57,11 +62,32 @@ export default function LawFirmDashboard({ user }: Props) {
 
       {/* Metrics */}
       <div className="grid grid-cols-4 gap-4 mb-8">
-        <MetricCard label="Total Cases"       value={summary ? String(summary.total_cases) : '—'} />
-        <MetricCard label="Draft Batches"     value={summary ? String(summary.draft_batches ?? 0) : '—'} />
-        <MetricCard label="Submitted Batches" value={summary ? String(summary.submitted_batches ?? 0) : '—'} />
-        <MetricCard label="Funded Batches"    value={summary ? String(summary.funded_batches ?? 0) : '—'} />
+        <MetricCard label="Active Cases"    value={summary ? String((summary.total_cases ?? 0) - (summary.closed_cases ?? 0)) : '—'} />
+        <MetricCard label="Bills Uploaded"  value={summary ? String(summary.bills_uploaded ?? 0) : '—'} />
+        <MetricCard label="Active Batches"  value={summary ? String((summary.draft_batches ?? 0) + (summary.submitted_batches ?? 0)) : '—'} />
+        <MetricCard label="Law Firm Spread" value={summary ? formatCurrency(summary.total_law_firm_spread ?? '0') : '—'} />
       </div>
+
+      {/* Financial breakdown — law firm earnings */}
+      {summary && parseFloat(summary.total_funder_funding ?? '0') > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+          <h2 className="text-sm font-semibold text-gray-900 mb-4">Funding Economics</h2>
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Funder Funding Amount</p>
+              <p className="text-xl font-semibold text-blue-700 tabular-nums">{formatCurrency(summary.total_funder_funding)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Provider Payout</p>
+              <p className="text-xl font-semibold text-gray-900 tabular-nums">{formatCurrency(summary.total_provider_payout)}</p>
+            </div>
+            <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+              <p className="text-xs text-green-600 uppercase tracking-wide mb-1">Law Firm Spread (60%)</p>
+              <p className="text-xl font-semibold text-green-700 tabular-nums">{formatCurrency(summary.total_law_firm_spread)}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cases table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">

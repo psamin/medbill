@@ -23,11 +23,7 @@ interface UsersResponse       { success: boolean; data: AssignableUser[] }
 interface AssignResponse      { success: boolean; data: CaseAssignment }
 interface Props { params: Promise<{ caseId: string }> }
 
-const BILL_STATUS_COLORS: Record<string, string> = {
-  uploaded: 'bg-gray-100 text-gray-600', processing: 'bg-blue-100 text-blue-700',
-  completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-600',
-  review_ready: 'bg-amber-100 text-amber-700',
-}
+
 const BATCH_STATUS_LABELS: Record<string, string> = {
   draft: 'Draft', submitted: 'Submitted', funder_review: 'Under Review',
   partially_funded: 'Partially Funded', funded: 'Funded', rejected: 'Rejected',
@@ -56,7 +52,13 @@ export default function CaseDetailPage({ params }: Props) {
   const [assignError, setAssignError] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
 
+  // Close/Reopen state
+  const [showCloseModal, setShowCloseModal] = useState(false)
+  const [closeReason, setCloseReason] = useState('')
+  const [closeLoading, setCloseLoading] = useState(false)
+
   // Batch creation state
+  const [autoOpenUpload, setAutoOpenUpload] = useState(false)
   const [showBatchForm, setShowBatchForm] = useState(false)
   const [selectedBillIds, setSelectedBillIds] = useState<Set<number>>(new Set())
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
@@ -98,13 +100,41 @@ export default function CaseDetailPage({ params }: Props) {
       .finally(() => setLoading(false))
   }, [caseId, router])
 
-  const canManage = user?.role === 'law_firm' || user?.role === 'admin'
-  const canUpload  = user?.role !== 'funder'
-  const showLfSpread = user?.role === 'law_firm' || user?.role === 'admin'
+  const canManage    = user?.role === 'law_firm' || user?.role === 'admin'
+  const isClosed     = caseData?.status === 'closed'
+  const canUpload    = user?.role !== 'funder' && !isClosed
+  const isProvider   = user?.role === 'provider'
 
-  const funderAssignments  = caseData?.assignments.filter(a => a.role_on_case === 'funder') ?? []
+  async function closeCase() {
+    setCloseLoading(true)
+    try {
+      interface CaseResponse { success: boolean; data: CaseDetail }
+      const res = await api.post<CaseResponse>(`/api/cases/${caseId}/close`, { reason: closeReason })
+      setCaseData(prev => prev ? { ...prev, ...res.data } : prev)
+      setShowCloseModal(false); setCloseReason('')
+    } catch (err) { alert(err instanceof Error ? err.message : 'Failed to close case') }
+    finally { setCloseLoading(false) }
+  }
+
+  async function reopenCase() {
+    try {
+      interface CaseResponse { success: boolean; data: CaseDetail }
+      const res = await api.post<CaseResponse>(`/api/cases/${caseId}/reopen`)
+      setCaseData(prev => prev ? { ...prev, ...res.data } : prev)
+    } catch (err) { alert(err instanceof Error ? err.message : 'Failed to reopen case') }
+  }
+  const showLfSpread = user?.role === 'law_firm' || user?.role === 'admin'
+  const showFunderAmount = !isProvider
+
+  const funderAssignments   = caseData?.assignments.filter(a => a.role_on_case === 'funder') ?? []
   const providerAssignments = caseData?.assignments.filter(a => a.role_on_case === 'provider') ?? []
-  const completedBills = caseData?.bills.filter(b => b.status === 'completed') ?? []
+  const completedBills      = caseData?.bills.filter(b => b.status === 'completed') ?? []
+
+  // Provider-facing: expected payout derived from active/funded batches on this case
+  const totalProviderPayout = batches
+    .filter(b => ['submitted', 'funder_review', 'partially_funded', 'funded'].includes(b.status))
+    .reduce((sum, b) => sum + parseFloat(b.total_provider_negotiated_payout || '0'), 0)
+    .toFixed(2)
 
   // ── Assignment helpers ─────────────────────────────────────────────────────
   async function handleAssign(e: React.FormEvent) {
@@ -201,8 +231,20 @@ export default function CaseDetailPage({ params }: Props) {
                   CPT Rates
                 </Link>
               )}
-              {canUpload && (
-                <button onClick={() => setTab('bills')}
+              {canManage && isClosed && (
+                <button onClick={reopenCase}
+                  className="border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-gray-50">
+                  Reopen Case
+                </button>
+              )}
+              {canManage && !isClosed && (
+                <button onClick={() => setShowCloseModal(true)}
+                  className="border border-gray-300 text-gray-600 px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-gray-50 hover:text-gray-900">
+                  Close Case
+                </button>
+              )}
+              {canUpload && tab !== 'bills' && (
+                <button onClick={() => { setTab('bills'); setAutoOpenUpload(true) }}
                   className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700">
                   Upload Bill
                 </button>
@@ -225,6 +267,56 @@ export default function CaseDetailPage({ params }: Props) {
           </div>
         </div>
 
+        {/* Closed case banner */}
+        {isClosed && (
+          <div className="bg-gray-50 border border-gray-200 rounded-xl px-5 py-3 flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-gray-700">This case is closed.</span>
+              <span className="ml-2 text-sm text-gray-500">
+                Bills and batches are read-only.
+                {caseData?.close_reason && <> Reason: <em>{caseData.close_reason}</em></>}
+              </span>
+            </div>
+            {canManage && (
+              <button onClick={reopenCase} className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+                Reopen →
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Close confirmation modal */}
+        {showCloseModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-xl p-6 w-full max-w-md mx-4">
+              <h2 className="text-base font-semibold text-gray-900 mb-2">Close this case?</h2>
+              <p className="text-sm text-gray-500 mb-4">
+                Closing will prevent new bills, batches, or assignment changes unless the case is reopened.
+                All existing data remains accessible.
+              </p>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Reason (optional)</label>
+              <input
+                type="text"
+                value={closeReason}
+                onChange={e => setCloseReason(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') closeCase(); if (e.key === 'Escape') setShowCloseModal(false) }}
+                placeholder="e.g. Settled, funded, workflow complete"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-gray-400"
+              />
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => { setShowCloseModal(false); setCloseReason('') }}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">
+                  Cancel
+                </button>
+                <button onClick={closeCase} disabled={closeLoading}
+                  className="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-900 disabled:opacity-50">
+                  {closeLoading ? 'Closing…' : 'Close Case'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── OVERVIEW TAB ─────────────────────────────────────────────────── */}
         {tab === 'overview' && (
           <div className="space-y-6">
@@ -235,13 +327,20 @@ export default function CaseDetailPage({ params }: Props) {
                 <p className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{formatCurrency(caseData.total_billed_amount)}</p>
               </div>
               <div className="bg-white rounded-xl border border-gray-200 p-5">
-                <p className="text-xs text-gray-500 uppercase tracking-wide">Medicare Allowed</p>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Medicare Benchmark</p>
                 <p className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{formatCurrency(caseData.total_medicare_amount)}</p>
               </div>
-              <div className="bg-green-50 rounded-xl border border-green-200 p-5">
-                <p className="text-xs text-green-600 uppercase tracking-wide">Case Savings vs Billed</p>
-                <p className="mt-1 text-2xl font-semibold text-green-700 tabular-nums">{formatCurrency(caseData.total_savings)}</p>
-              </div>
+              {isProvider ? (
+                <div className="bg-blue-50 rounded-xl border border-blue-200 p-5">
+                  <p className="text-xs text-blue-600 uppercase tracking-wide">Expected Provider Payout</p>
+                  <p className="mt-1 text-2xl font-semibold text-blue-700 tabular-nums">{formatCurrency(totalProviderPayout)}</p>
+                </div>
+              ) : (
+                <div className="bg-green-50 rounded-xl border border-green-200 p-5">
+                  <p className="text-xs text-green-600 uppercase tracking-wide">Case Savings vs Billed</p>
+                  <p className="mt-1 text-2xl font-semibold text-green-700 tabular-nums">{formatCurrency(caseData.total_savings)}</p>
+                </div>
+              )}
             </div>
 
             {/* Quick stats */}
@@ -280,12 +379,8 @@ export default function CaseDetailPage({ params }: Props) {
                       <tr key={bill.id}
                         className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                         onClick={() => router.push(`/bills/${bill.id}`)}>
-                        <td className="px-5 py-3 font-medium text-blue-700">{bill.provider_name || bill.original_filename}</td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${BILL_STATUS_COLORS[bill.status] ?? 'bg-gray-100 text-gray-600'}`}>
-                            {bill.status.replace('_', ' ')}
-                          </span>
-                        </td>
+                        <td className="px-5 py-3 font-medium text-blue-700">{bill.display_name || bill.provider_name || bill.original_filename}</td>
+                        <td className="px-5 py-3"><StatusBadge status={bill.status} /></td>
                         <td className="px-5 py-3 text-right tabular-nums text-gray-700">{formatCurrency(bill.total_billed_amount)}</td>
                       </tr>
                     ))}
@@ -302,9 +397,14 @@ export default function CaseDetailPage({ params }: Props) {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-900">Bills</h2>
               {canUpload && (
-                <UploadBillInline caseId={caseId} onUploaded={bill => {
-                  setCaseData(prev => prev ? { ...prev, bills: [...prev.bills, bill] } : prev)
-                }} />
+                <UploadBillInline
+                  caseId={caseId}
+                  autoOpen={autoOpenUpload}
+                  onAutoOpenConsumed={() => setAutoOpenUpload(false)}
+                  onUploaded={bill => {
+                    setCaseData(prev => prev ? { ...prev, bills: [...prev.bills, bill] } : prev)
+                  }}
+                />
               )}
             </div>
             {caseData.bills.length === 0 ? (
@@ -331,17 +431,13 @@ export default function CaseDetailPage({ params }: Props) {
                         className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                         onClick={() => router.push(`/bills/${bill.id}`)}>
                         <td className="px-5 py-3">
-                          <p className="font-medium text-blue-700">{bill.provider_name || bill.original_filename}</p>
-                          {bill.provider_name && <p className="text-xs text-gray-400">{bill.original_filename}</p>}
+                          <p className="font-medium text-blue-700">{bill.display_name || bill.provider_name || bill.original_filename}</p>
+                          {(bill.display_name || bill.provider_name) && <p className="text-xs text-gray-400">{bill.original_filename}</p>}
                         </td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${BILL_STATUS_COLORS[bill.status] ?? 'bg-gray-100 text-gray-600'}`}>
-                            {bill.status.replace('_', ' ')}
-                          </span>
-                        </td>
+                        <td className="px-5 py-3"><StatusBadge status={bill.status} /></td>
                         <td className="px-5 py-3">
                           {bill.funding_status !== 'not_requested' && (
-                            <span className="text-xs text-gray-600">{bill.funding_status.replace('_', ' ')}</span>
+                            <StatusBadge status={bill.funding_status} />
                           )}
                         </td>
                         <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(bill.total_billed_amount)}</td>
@@ -411,7 +507,7 @@ export default function CaseDetailPage({ params }: Props) {
           <div>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-900">Funding Batches</h2>
-              {canManage && completedBills.length > 0 && (
+              {canManage && !isClosed && completedBills.length > 0 && (
                 <button onClick={() => setShowBatchForm(!showBatchForm)}
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
                   {showBatchForm ? 'Cancel' : '+ Create 15-Day Batch'}
@@ -507,8 +603,11 @@ export default function CaseDetailPage({ params }: Props) {
                       <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
                       <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
                       <th className="text-left px-5 py-3 font-medium text-gray-500">Funder</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Funder Funding</th>
+                      <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
+                      {showFunderAmount
+                        ? <th className="text-right px-5 py-3 font-medium text-gray-500">Funder Funding</th>
+                        : <th className="text-right px-5 py-3 font-medium text-gray-500">Provider Payout</th>
+                      }
                       {showLfSpread && <th className="text-right px-5 py-3 font-medium text-gray-500">LF Spread</th>}
                       <th className="text-left px-5 py-3 font-medium text-gray-500">Created</th>
                     </tr>
@@ -529,7 +628,10 @@ export default function CaseDetailPage({ params }: Props) {
                         </td>
                         <td className="px-5 py-3 text-gray-600 text-xs">{batch.assigned_funder_org ?? '—'}</td>
                         <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
-                        <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                        {showFunderAmount
+                          ? <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                          : <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
+                        }
                         {showLfSpread && <td className="px-5 py-3 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
                         <td className="px-5 py-3 text-xs text-gray-400">{formatDate(batch.created_at)}</td>
                       </tr>
@@ -546,11 +648,27 @@ export default function CaseDetailPage({ params }: Props) {
 }
 
 // ── Inline upload component ─────────────────────────────────────────────────
-function UploadBillInline({ caseId, onUploaded }: { caseId: string; onUploaded: (bill: MedicalBill) => void }) {
+interface UploadBillInlineProps {
+  caseId: string
+  onUploaded: (bill: MedicalBill) => void
+  autoOpen?: boolean
+  onAutoOpenConsumed?: () => void
+}
+
+function UploadBillInline({ caseId, onUploaded, autoOpen, onAutoOpenConsumed }: UploadBillInlineProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [billName, setBillName] = useState('')
   const [providerName, setProviderName] = useState('')
+
+  // Auto-open when navigated from the header Upload Bill button on another tab
+  useEffect(() => {
+    if (autoOpen) {
+      setShowForm(true)
+      onAutoOpenConsumed?.()
+    }
+  }, [autoOpen, onAutoOpenConsumed])
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -559,11 +677,12 @@ function UploadBillInline({ caseId, onUploaded }: { caseId: string; onUploaded: 
     try {
       const fd = new FormData()
       fd.append('file', file)
+      if (billName)     fd.append('display_name', billName)
       if (providerName) fd.append('provider_name', providerName)
       interface BillResponse { success: boolean; data: MedicalBill }
       const res = await api.upload<BillResponse>(`/api/cases/${caseId}/bills/upload`, fd)
       onUploaded(res.data)
-      setShowForm(false); setProviderName('')
+      setShowForm(false); setBillName(''); setProviderName('')
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
@@ -582,10 +701,16 @@ function UploadBillInline({ caseId, onUploaded }: { caseId: string; onUploaded: 
   return (
     <div className="flex items-end gap-2 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
       <div>
+        <label className="text-xs text-gray-600 mb-1 block">Bill name (optional)</label>
+        <input type="text" value={billName} onChange={e => setBillName(e.target.value)}
+          placeholder="e.g. ER Visit May 2026"
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-44" />
+      </div>
+      <div>
         <label className="text-xs text-gray-600 mb-1 block">Provider name (optional)</label>
         <input type="text" value={providerName} onChange={e => setProviderName(e.target.value)}
           placeholder="e.g. City General Hospital"
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-52" />
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-44" />
       </div>
       <div>
         <label className="text-xs text-gray-600 mb-1 block">PDF file</label>

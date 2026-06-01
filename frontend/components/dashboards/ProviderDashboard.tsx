@@ -15,7 +15,9 @@ interface Summary {
   total_cases: number
   my_bills_count: number
   bills_pending_review: number
-  batch_count: number
+  pending_batches: number
+  funded_batches: number
+  total_provider_payout: string
   total_medicare: string
 }
 
@@ -51,10 +53,10 @@ export default function ProviderDashboard({ user }: Props) {
       </div>
 
       <div className="grid grid-cols-4 gap-4 mb-8">
-        <MetricCard label="Assigned Cases"   value={summary ? String(summary.total_cases) : '—'} />
-        <MetricCard label="Bills Uploaded"   value={summary ? String(summary.my_bills_count ?? 0) : '—'} />
-        <MetricCard label="Pending Review"   value={summary ? String(summary.bills_pending_review ?? 0) : '—'} />
-        <MetricCard label="Total Medicare Allowed" value={summary ? formatCurrency(summary.total_medicare) : '—'} />
+        <MetricCard label="Assigned Cases"       value={summary ? String(summary.total_cases) : '—'} />
+        <MetricCard label="Bills Uploaded"       value={summary ? String(summary.my_bills_count ?? 0) : '—'} />
+        <MetricCard label="Pending Payment"      value={summary ? String(summary.pending_batches ?? 0) : '—'} />
+        <MetricCard label="Total Provider Payout" value={summary ? formatCurrency(summary.total_provider_payout ?? '0') : '—'} />
       </div>
 
       {/* Assigned cases */}
@@ -74,7 +76,7 @@ export default function ProviderDashboard({ user }: Props) {
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Case #</th>
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Patient</th>
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Created</th>
               </tr>
             </thead>
@@ -107,7 +109,7 @@ export default function ProviderDashboard({ user }: Props) {
               <tr className="bg-gray-50 border-b border-gray-100">
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-500">Provider Payout</th>
               </tr>
             </thead>

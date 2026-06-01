@@ -108,7 +108,9 @@ export default function BatchDetailPage({ params }: Props) {
   const role = user?.role ?? ''
   const isFunder = role === 'funder' || role === 'admin'
   const isLawFirm = role === 'law_firm' || role === 'admin'
+  const isProvider = role === 'provider'
   const showLfSpread = isLawFirm
+  const showFunderAmount = !isProvider
   const canSubmit = isLawFirm && batch.status === 'draft' && !!batch.assigned_funder_id && batch.item_count > 0
   const canStartReview = isFunder && batch.status === 'submitted'
   const batchOpen = ['submitted', 'funder_review', 'partially_funded'].includes(batch.status)
@@ -225,7 +227,7 @@ export default function BatchDetailPage({ params }: Props) {
               <MathRow label="Total Billed" value={formatCurrency(batch.total_billed_amount)} />
               <MathRow label="Medicare Allowed Amount" sub="Basis for all calculations" value={formatCurrency(batch.total_medicare_amount)} />
               <MathRow label="Provider Negotiated Payout" sub="CPT-specific rates per line" value={formatCurrency(batch.total_provider_negotiated_payout)} />
-              <MathRow label="Funder Funding Amount" sub="160% of Medicare Allowed" value={formatCurrency(batch.total_funder_funding_amount)} accent="text-blue-700" />
+              {showFunderAmount && <MathRow label="Funder Funding Amount" sub="160% of Medicare Allowed" value={formatCurrency(batch.total_funder_funding_amount)} accent="text-blue-700" />}
               {showLfSpread && <>
                 <MathRow label="Spread" sub="Funder Funding − Provider Payout" value={formatCurrency(batch.total_spread_amount)} />
                 <MathRow label="Law Firm Spread" sub="60% of Spread" value={formatCurrency(batch.total_law_firm_spread_amount)} accent="text-green-700" />
@@ -261,7 +263,7 @@ export default function BatchDetailPage({ params }: Props) {
                       <th className="text-right px-4 py-2.5 font-medium text-gray-500">Rate</th>
                       <th className="text-right px-4 py-2.5 font-medium text-gray-500">Medicare</th>
                       <th className="text-right px-4 py-2.5 font-medium text-gray-500">Provider Payout</th>
-                      <th className="text-right px-4 py-2.5 font-medium text-gray-500">Funder Funds</th>
+                      {showFunderAmount && <th className="text-right px-4 py-2.5 font-medium text-gray-500">Funder Funds</th>}
                       {showLfSpread && <th className="text-right px-4 py-2.5 font-medium text-gray-500">LF Spread</th>}
                       {canItemAction && <th className="px-4 py-2.5 font-medium text-gray-500">Status</th>}
                     </tr>
@@ -277,7 +279,7 @@ export default function BatchDetailPage({ params }: Props) {
                         <td className="px-4 py-2.5 text-right text-blue-700">{(parseFloat(item.negotiated_cpt_multiplier) * 100).toFixed(0)}%</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.medicare_allowed_amount)}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.provider_negotiated_payout)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(item.funder_funding_amount)}</td>
+                        {showFunderAmount && <td className="px-4 py-2.5 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(item.funder_funding_amount)}</td>}
                         {showLfSpread && <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{formatCurrency(item.law_firm_spread_amount)}</td>}
                         {canItemAction && (
                           <td className="px-4 py-2.5">
@@ -324,7 +326,7 @@ export default function BatchDetailPage({ params }: Props) {
                       <td className="px-4 py-2.5 text-gray-700" colSpan={3}>Totals</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-blue-700">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                      {showFunderAmount && <td className="px-4 py-2.5 text-right tabular-nums text-blue-700">{formatCurrency(batch.total_funder_funding_amount)}</td>}
                       {showLfSpread && <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
                       {(canItemAction || batch.items.some(i => i.item_status !== 'pending')) && <td />}
                     </tr>

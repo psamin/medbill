@@ -14,6 +14,7 @@ export interface MedicalBill {
   id: number
   case_id: number
   uploaded_by_id: number
+  display_name: string | null
   provider_name: string | null
   original_filename: string
   status: BillStatus
@@ -28,6 +29,11 @@ export interface MedicalBill {
   unmatched_line_item_count: number
   processing_confidence: string
   error_message: string | null
+  extraction_method: string | null
+  extraction_model: string | null
+  extraction_warnings: string[]
+  extraction_status: string | null
+  detected_row_count: number
   created_at: string
   updated_at: string
 }

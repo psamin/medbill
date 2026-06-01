@@ -18,6 +18,9 @@ export interface PatientCase {
   total_billed_amount: string
   total_medicare_amount: string
   total_savings: string
+  closed_at: string | null
+  closed_by_id: number | null
+  close_reason: string | null
   created_at: string
   updated_at: string
 }

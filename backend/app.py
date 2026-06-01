@@ -44,6 +44,8 @@ CORS(app, origins=[FRONTEND_URL], supports_credentials=True)
 DEFAULT_NEGOTIATED_RATE_MULTIPLIER = Decimal(os.getenv('DEFAULT_NEGOTIATED_RATE_MULTIPLIER', '1.00'))
 FUNDER_MEDICARE_MULTIPLIER         = Decimal(os.getenv('FUNDER_MEDICARE_MULTIPLIER', '1.60'))
 LAW_FIRM_SPREAD_PERCENT            = Decimal(os.getenv('LAW_FIRM_SPREAD_PERCENT', '0.60'))
+CLAUDE_EXTRACTION_MODEL          = os.getenv('CLAUDE_EXTRACTION_MODEL', 'claude-haiku-4-5-20251001')
+CLAUDE_EXTRACTION_FALLBACK_MODEL = os.getenv('CLAUDE_EXTRACTION_FALLBACK_MODEL', 'claude-sonnet-4-6')
 
 # =============================================================================
 # 3. DATABASE SETUP
@@ -105,6 +107,9 @@ class PatientCase(db.Model):
     total_billed_amount = db.Column(Numeric(12, 2), default=0)
     total_medicare_amount = db.Column(Numeric(12, 2), default=0)
     total_savings = db.Column(Numeric(12, 2), default=0)
+    closed_at = db.Column(db.DateTime, nullable=True)
+    closed_by_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    close_reason = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow,
                            onupdate=datetime.utcnow, nullable=False)
@@ -123,6 +128,9 @@ class PatientCase(db.Model):
             'total_billed_amount': str(self.total_billed_amount),
             'total_medicare_amount': str(self.total_medicare_amount),
             'total_savings': str(self.total_savings),
+            'closed_at': self.closed_at.isoformat() if self.closed_at else None,
+            'closed_by_id': self.closed_by_id,
+            'close_reason': self.close_reason,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -134,6 +142,7 @@ class MedicalBill(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     case_id = db.Column(db.Integer, db.ForeignKey('patient_cases.id'), nullable=False)
     uploaded_by_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    display_name = db.Column(db.String(255), nullable=True)  # user-editable label
     provider_name = db.Column(db.String(255), nullable=True)
     original_filename = db.Column(db.String(255), nullable=False)
     stored_filename = db.Column(db.String(255), nullable=False)
@@ -152,6 +161,13 @@ class MedicalBill(db.Model):
     unmatched_line_item_count = db.Column(db.Integer, default=0)
     processing_confidence = db.Column(Numeric(5, 2), default=0)
     error_message = db.Column(db.Text, nullable=True)
+    # 'claude_page_by_page' | 'regex' | 'regex_fallback' | 'failed'
+    extraction_method   = db.Column(db.String(50), nullable=True)
+    extraction_model    = db.Column(db.String(200), nullable=True)
+    extraction_warnings = db.Column(db.Text, nullable=True)        # JSON array
+    # 'processing' | 'completed' | 'partial' | 'failed'
+    extraction_status   = db.Column(db.String(50), nullable=True)
+    detected_row_count  = db.Column(db.Integer, default=0, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow,
                            onupdate=datetime.utcnow, nullable=False)
@@ -164,6 +180,7 @@ class MedicalBill(db.Model):
             'id': self.id,
             'case_id': self.case_id,
             'uploaded_by_id': self.uploaded_by_id,
+            'display_name': self.display_name,
             'provider_name': self.provider_name,
             'original_filename': self.original_filename,
             'status': self.status,
@@ -178,6 +195,11 @@ class MedicalBill(db.Model):
             'unmatched_line_item_count': self.unmatched_line_item_count,
             'processing_confidence': str(self.processing_confidence),
             'error_message': self.error_message,
+            'extraction_method':   self.extraction_method,
+            'extraction_model':    self.extraction_model,
+            'extraction_warnings': json.loads(self.extraction_warnings) if self.extraction_warnings else [],
+            'extraction_status':   self.extraction_status,
+            'detected_row_count':  self.detected_row_count or 0,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -530,31 +552,435 @@ def can_user_access_bill(user_id: int, role: str, bill: 'MedicalBill') -> bool:
     return can_user_access_case(user_id, role, case)
 
 
-# Matches: <CPT or HCPCS code>  <description text>  $<amount>
+# Regex fallback — CPT or HCPCS code + description + dollar amount on one line
 _LINE_RE = re.compile(
-    r'\b([A-Z]\d{4}|\d{5})\b'   # CPT (5 digits) or HCPCS (letter + 4 digits)
-    r'\s+'
-    r'(.+?)'                      # description (non-greedy)
-    r'\s+\$\s*([0-9,]+\.\d{2})'  # dollar amount
-    r'\s*$',
+    r'\b([A-Z]\d{4}|\d{5})\b'
+    r'\s+(.+?)\s+\$\s*([0-9,]+\.\d{2})\s*$',
     re.MULTILINE,
 )
 
 
-def extract_text_from_pdf(file_path: str) -> str:
+# =============================================================================
+# PDF EXTRACTION HELPERS  (page-by-page, Claude tool-use)
+# =============================================================================
+
+# Tool schema used with every Claude extraction call.
+# Using tool_choice forces the SDK to return structured JSON — no free-text parsing.
+_EXTRACTION_TOOL = {
+    'name': 'submit_line_items',
+    'description': 'Submit all extracted billable line items from this page of a medical bill',
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'line_items': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'row_index':     {'type': 'integer', 'description': 'Row index on this page, starting at 1'},
+                        'code':          {'type': 'string',  'description': 'CPT (e.g. 99213) or HCPCS (e.g. A0428) code'},
+                        'code_type':     {'type': 'string',  'enum': ['CPT', 'HCPCS', 'REV', 'UNKNOWN']},
+                        'description':   {'type': 'string'},
+                        'quantity':      {'type': 'number'},
+                        'billed_amount': {'type': 'number',  'description': 'Charged dollar amount as a plain number'},
+                        'confidence':    {'type': 'string',  'enum': ['high', 'medium', 'low']},
+                        'warning':       {'type': 'string',  'description': 'Reason for low confidence (optional)'},
+                    },
+                    'required': ['row_index', 'code', 'code_type', 'description',
+                                 'quantity', 'billed_amount', 'confidence'],
+                },
+            },
+            'page_total_billed': {
+                'type': ['number', 'null'],
+                'description': 'Page subtotal if visible, otherwise null',
+            },
+            'warnings': {'type': 'array', 'items': {'type': 'string'}},
+        },
+        'required': ['line_items', 'warnings'],
+    },
+}
+
+_EXTRACTION_SYSTEM = (
+    'You are a medical billing specialist extracting line items from a medical bill page.\n\n'
+    'Rules:\n'
+    '- Extract EVERY billable line item — do not stop early.\n'
+    '- CPT codes: 5-digit numeric (99213, 99214, 93000, 97110, 99285).\n'
+    '- HCPCS codes: letter + 4 digits (A0428, E0114, J0696).\n'
+    '- REV codes: 3-4 digit revenue codes (UB-04 forms).\n'
+    '- Do NOT mix a code from one row with an amount from a different row.\n'
+    '- Do NOT invent Medicare amounts — only extract the billed/charged amount.\n'
+    '- Ignore: column headers, footers, subtotals, page totals, patient info, insurance fields.\n'
+    '- billed_amount = plain number without $ or commas.\n'
+    '- quantity = 1 if not shown.\n'
+    '- confidence "low" + warning for ambiguous rows — include them, do NOT drop.\n'
+    '- Call submit_line_items with ALL items found on this page.'
+)
+
+
+def _extract_rows_from_page(page) -> tuple[list, int]:
+    """
+    Build row-candidate strings from a PDF page using word coordinates.
+    Groups words by y-position into logical rows, sorted left-to-right.
+    Returns (row_strings, detected_row_count).
+    """
+    try:
+        words = page.extract_words(x_tolerance=5, y_tolerance=3)
+    except Exception:
+        return [], 0
+    if not words:
+        return [], 0
+
+    buckets: dict[int, list] = {}
+    for w in words:
+        y_key = round(float(w['top']) / 5) * 5
+        buckets.setdefault(y_key, []).append(w)
+
+    rows = []
+    for y_key in sorted(buckets.keys()):
+        row_words = sorted(buckets[y_key], key=lambda w: w['x0'])
+        text = '  '.join(w['text'] for w in row_words).strip()
+        if text:
+            rows.append(f'Row {len(rows) + 1}: {text}')
+
+    return rows, len(rows)
+
+
+def _format_table_lines(tables: list) -> list:
+    """Format pdfplumber table data as pipe-separated row strings."""
+    lines = []
+    for t_idx, tbl in enumerate(tables, 1):
+        lines.append(f'[TABLE {t_idx}]')
+        for row in tbl:
+            if row and any(c for c in row if c):
+                lines.append('  |  '.join(str(c or '').strip() for c in row))
+    return lines
+
+
+def _call_claude_for_page(
+    page_num: int,
+    row_strings: list,
+    table_lines: list,
+    raw_text: str,
+    model: str,
+) -> dict:
+    """
+    Call Claude with tool-use for a single PDF page.
+    Tool-use guarantees structured output — no JSON parsing needed.
+    Raises on any failure so the caller can retry with a different model.
+    """
+    import anthropic
+
+    api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+    if not api_key:
+        raise ValueError('ANTHROPIC_API_KEY not set')
+
+    # Build per-page context: tables first (most structured), then word-rows, then raw text
+    parts = [f'Medical bill page {page_num}:']
+    if table_lines:
+        parts.append('TABLES:')
+        parts.extend(table_lines[:500])      # cap at 500 table rows
+    if row_strings:
+        parts.append('WORD-LAYOUT ROWS:')
+        parts.extend(row_strings[:300])      # cap at 300 rows
+    if raw_text and not table_lines:         # include raw text only when no tables
+        parts.append('RAW TEXT:')
+        parts.append(raw_text[:6000])
+
+    context = '\n'.join(parts)
+
+    client   = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        system=_EXTRACTION_SYSTEM,
+        tools=[_EXTRACTION_TOOL],
+        tool_choice={'type': 'tool', 'name': 'submit_line_items'},
+        messages=[{
+            'role': 'user',
+            'content': f'Extract all billable line items from this page:\n\n{context}',
+        }],
+    )
+
+    tool_block = next((b for b in response.content if b.type == 'tool_use'), None)
+    if tool_block is None:
+        raise ValueError(
+            f'Claude returned no tool_use block '
+            f'(stop_reason={response.stop_reason}, '
+            f'content_types={[b.type for b in response.content]})'
+        )
+
+    result = tool_block.input   # already a Python dict — SDK handles JSON
+    result['_model'] = model
+    return result
+
+
+def _extract_bill_page_by_page(file_path: str) -> dict:
+    """
+    Orchestrate per-page Claude extraction across the entire PDF.
+    Each page is sent as a separate Claude call to avoid huge JSON responses.
+    Returns dict: {line_items, warnings, pages_processed, detected_row_count,
+                   models_used, extraction_method}
+    Raises ValueError if no items are extracted.
+    """
     import pdfplumber
-    pages = []
+
+    primary_model  = CLAUDE_EXTRACTION_MODEL
+    fallback_model = CLAUDE_EXTRACTION_FALLBACK_MODEL
+
+    all_items:    list[dict] = []
+    all_warnings: list[str]  = []
+    total_detected = 0
+    pages_processed = 0
+    models_used: set = set()
+    global_row_offset = 0
+
     with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                pages.append(text)
-    return '\n'.join(pages)
+        for page_num, page in enumerate(pdf.pages, 1):
+
+            row_strings, detected = _extract_rows_from_page(page)
+            total_detected += detected
+
+            table_lines: list = []
+            try:
+                raw_tables = page.extract_tables() or []
+                table_lines = _format_table_lines(raw_tables)
+            except Exception:
+                pass
+
+            raw_text = page.extract_text() or ''
+
+            # Skip blank pages
+            if not row_strings and not table_lines and not raw_text.strip():
+                continue
+
+            pages_processed += 1
+
+            # Try primary model, fall back to stronger model on failure
+            page_result = None
+            for attempt_model in (primary_model, fallback_model):
+                try:
+                    page_result = _call_claude_for_page(
+                        page_num, row_strings, table_lines, raw_text, attempt_model
+                    )
+                    models_used.add(attempt_model)
+                    break
+                except Exception as exc:
+                    app.logger.warning(
+                        'Bill page %d: %s failed — %s%s',
+                        page_num, attempt_model, exc,
+                        ' (retrying with fallback)' if attempt_model == primary_model else ' (giving up)',
+                    )
+                    if attempt_model == fallback_model:
+                        all_warnings.append(f'Page {page_num}: extraction failed — {exc}')
+
+            if page_result is None:
+                continue
+
+            items_this_page = page_result.get('line_items') or []
+            for item in items_this_page:
+                item['page'] = page_num
+                # Make row_index globally unique across pages
+                item['row_index'] = global_row_offset + int(item.get('row_index') or 1)
+                all_items.append(item)
+            global_row_offset += max(len(items_this_page), detected)
+
+            page_warnings = [w for w in (page_result.get('warnings') or []) if w]
+            all_warnings.extend(page_warnings)
+
+            app.logger.info(
+                'Page %d: detected=%d extracted=%d model=%s',
+                page_num, detected, len(items_this_page),
+                page_result.get('_model', attempt_model),
+            )
+
+    if not all_items:
+        raise ValueError(
+            f'Claude extracted 0 items across {pages_processed} page(s). '
+            f'Detected ~{total_detected} row candidates. '
+            'Check ANTHROPIC_API_KEY and PDF readability.'
+        )
+
+    # Warn on low yield relative to detected row candidates
+    if total_detected > 10 and len(all_items) < 0.5 * total_detected:
+        all_warnings.append(
+            f'Low extraction yield: {len(all_items)} items from ~{total_detected} '
+            'detected row candidates — some rows may have been missed.'
+        )
+
+    app.logger.info(
+        'Extraction complete: %d items from %d pages, '
+        'detected=%d, models=%s',
+        len(all_items), pages_processed, total_detected,
+        sorted(models_used),
+    )
+
+    return {
+        'line_items':         all_items,
+        'warnings':           all_warnings,
+        'pages_processed':    pages_processed,
+        'detected_row_count': total_detected,
+        'models_used':        sorted(models_used),
+        'extraction_method':  'claude_page_by_page',
+    }
 
 
-def parse_line_items(text: str) -> list:
+def _normalize_claude_items(items: list) -> list:
+    """
+    Convert Claude JSON line items to the internal format expected by process_bill.
+    Deduplicates exact duplicates (same code + description + billed_amount + page + row_index).
+    """
+    result = []
+    seen: set = set()
+
+    for i, item in enumerate(items, 1):
+        code = str(item.get('code') or '').strip().upper()
+        amount_raw = (
+            str(item.get('billed_amount') or '')
+            .replace(',', '').replace('$', '').strip()
+        )
+        if not code or not amount_raw:
+            continue
+        try:
+            billed = Decimal(amount_raw)
+            qty    = Decimal(str(item.get('quantity') or 1))
+        except Exception:
+            continue
+
+        description = str(item.get('description') or '').strip()
+        code_type   = str(item.get('code_type') or '').strip().upper()
+        if code_type not in ('CPT', 'HCPCS', 'REV', 'UNKNOWN'):
+            code_type = 'HCPCS' if (code and code[0].isalpha()) else 'CPT'
+
+        page      = int(item.get('page') or 1)
+        row_index = int(item.get('row_index') or i)
+        confidence = str(item.get('confidence') or 'high').lower()
+
+        dedup_key = (code, description, str(billed), page, row_index)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        result.append({
+            'line_number':   row_index,
+            'code':          code,
+            'code_type':     code_type,
+            'description':   description,
+            'quantity':      qty,
+            'billed_amount': billed,
+            'raw_text':      description,
+            'confidence':    confidence,
+            'warning':       str(item.get('warning') or '') or None,
+        })
+
+    return result
+
+
+def _table_extract_items(file_path: str) -> tuple[list, int]:
+    """
+    Fast pre-extraction using pdfplumber tables only.
+    Returns (items, detected_row_count).
+    Token usage: zero — no Claude call needed.
+    Used as a fast-path check before deciding whether to invoke Claude.
+    """
+    import pdfplumber
+    items:    list[dict] = []
+    detected: int        = 0
+    row_num = 0
+
+    # A "medical code" pattern: 5-digit CPT or letter+4-digit HCPCS
+    _CODE_RE = re.compile(r'^([A-Z]\d{4}|\d{5})$')
+    # A dollar amount
+    _AMT_RE  = re.compile(r'^[\$]?\s*([0-9,]+\.\d{2})$')
+
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                for tbl in (page.extract_tables() or []):
+                    for row in tbl:
+                        if not row:
+                            continue
+                        cells = [str(c or '').strip() for c in row]
+                        detected += 1
+                        # Look for a cell that is a medical code
+                        code = next((c for c in cells if _CODE_RE.match(c.upper())), None)
+                        if not code:
+                            continue
+                        # Look for a numeric amount (rightmost match)
+                        amt_str = None
+                        for c in reversed(cells):
+                            m = _AMT_RE.match(c)
+                            if m:
+                                amt_str = m.group(1).replace(',', '')
+                                break
+                        if not amt_str:
+                            continue
+                        try:
+                            billed = Decimal(amt_str)
+                        except Exception:
+                            continue
+
+                        # Description = longest non-code, non-amount cell
+                        desc = max(
+                            (c for c in cells if c and c != code and not _AMT_RE.match(c)),
+                            key=len,
+                            default=code,
+                        )
+                        row_num += 1
+                        code_upper = code.upper()
+                        items.append({
+                            'line_number':   row_num,
+                            'code':          code_upper,
+                            'code_type':     'HCPCS' if code_upper[0].isalpha() else 'CPT',
+                            'description':   desc,
+                            'quantity':      Decimal('1'),
+                            'billed_amount': billed,
+                            'raw_text':      ' | '.join(c for c in cells if c),
+                            'confidence':    'high',
+                            'warning':       None,
+                        })
+    except Exception as exc:
+        app.logger.debug('Table extraction failed: %s', exc)
+
+    return items, detected
+
+
+def _is_high_confidence_result(items: list, detected_rows: int) -> bool:
+    """
+    Return True when table/regex extraction is already good enough
+    that we do NOT need to spend tokens on Claude.
+
+    Criteria (all must pass):
+      1. Found at least 5 items (not just noise).
+      2. Yield >= 60% of detected row candidates.
+      3. Every item has a valid code and non-zero billed_amount.
+    """
+    if not items or len(items) < 5:
+        return False
+    if detected_rows > 0 and len(items) < 0.6 * detected_rows:
+        return False
+    for it in items:
+        code = str(it.get('code') or '').strip()
+        amt  = it.get('billed_amount', Decimal('0'))
+        if not code or Decimal(str(amt)) <= 0:
+            return False
+    return True
+
+
+def _regex_extract_items(file_path: str) -> list:
+    """Regex fallback — used only when Claude is unavailable or fails."""
+    import pdfplumber
+    text_parts: list[str] = []
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text() or ''
+                if t:
+                    text_parts.append(t)
+    except Exception as exc:
+        raise ValueError(f'PDF read failed during regex extraction: {exc}')
+
     items = []
-    for line_num, line in enumerate(text.splitlines(), 1):
+    for line_num, line in enumerate('\n'.join(text_parts).splitlines(), 1):
         m = _LINE_RE.search(line.strip())
         if not m:
             continue
@@ -565,15 +991,16 @@ def parse_line_items(text: str) -> list:
             billed_amount = Decimal(amount_str)
         except Exception:
             continue
-        code_type = 'HCPCS' if code[0].isalpha() else 'CPT'
         items.append({
-            'line_number': line_num,
-            'code': code,
-            'code_type': code_type,
-            'description': description,
-            'quantity': Decimal('1'),
+            'line_number':   line_num,
+            'code':          code,
+            'code_type':     'HCPCS' if code[0].isalpha() else 'CPT',
+            'description':   description,
+            'quantity':      Decimal('1'),
             'billed_amount': billed_amount,
-            'raw_text': line.strip(),
+            'raw_text':      line.strip(),
+            'confidence':    'high',
+            'warning':       None,
         })
     return items
 
@@ -917,182 +1344,214 @@ def get_or_fetch_rate(code: str, year: int | None = None) -> 'MedicareRate | Non
         return None
 
 
-def _extract_with_claude(text: str) -> list:
+_TECH_WARNING_SUBSTRINGS = (
+    'Claude', 'JSON', 'delimiter', 'Traceback', 'Page ', 'extraction failed',
+    'parse', 'token', 'tool_use', 'stop_reason',
+)
+
+
+def _user_facing_warnings(warnings: list) -> list:
+    """Drop technical/internal warnings — keep only messages a user can act on."""
+    return [
+        w for w in warnings
+        if not any(t in w for t in _TECH_WARNING_SUBSTRINGS)
+    ]
+
+
+def _save_line_items(bill: 'MedicalBill', raw_items: list) -> None:
     """
-    Fallback line-item extractor for bills the regex cannot parse.
-    Sends the bill text to Claude Haiku and returns a normalised list
-    of item dicts in the same shape parse_line_items() returns.
-    Never raises — returns [] on any failure or missing API key.
+    Runs Medicare lookup on raw_items, creates BillLineItem rows, writes totals.
+    Does NOT commit — callers commit after setting extraction metadata.
+    Deduplicates rate lookups: each unique CPT/HCPCS code is looked up only once.
     """
-    api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
-    if not api_key:
-        return []
+    import time
+    t0 = time.monotonic()
 
-    try:
-        import anthropic
-    except ImportError:
-        app.logger.warning('anthropic package not installed — run pip install anthropic')
-        return []
+    # Deduplicate rate lookups — one DB/Redis/CMS call per unique code
+    unique_codes = {str(item['code']).upper() for item in raw_items}
+    rate_cache: dict = {code: get_or_fetch_rate(code) for code in unique_codes}
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        model = os.getenv('CLAUDE_EXTRACTION_MODEL', 'claude-haiku-4-5-20251001')
+    app.logger.info(
+        'Bill %s: Medicare lookup — %d unique codes for %d items (%.2fs)',
+        bill.id, len(unique_codes), len(raw_items), time.monotonic() - t0,
+    )
 
-        response = client.messages.create(
-            model=model,
-            max_tokens=2048,
-            system=(
-                'You are a medical billing specialist. '
-                'Extract every line item from the bill text the user provides. '
-                'Return ONLY a valid JSON array — no explanation, no markdown fences. '
-                'Each element must have exactly these keys:\n'
-                '  code        — CPT or HCPCS procedure code string (e.g. "99213", "J0696")\n'
-                '  code_type   — "CPT" for 5-digit numeric, "HCPCS" for letter+4-digit, '
-                '"REV" for revenue codes, "UNKNOWN" if unclear\n'
-                '  description — procedure description string\n'
-                '  quantity    — numeric units billed (default 1)\n'
-                '  billed_amount — charged amount as a string without $ or commas (e.g. "350.00")\n'
-                'Omit rows that have no medical code or no dollar amount. '
-                'Do NOT include subtotals, totals, or header rows. '
-                'If nothing is found return [].'
-            ),
-            messages=[{
-                'role': 'user',
-                'content': f'Extract all line items from this medical bill:\n\n{text[:8000]}',
-            }],
+    total_billed   = Decimal('0')
+    total_medicare = Decimal('0')
+    matched = unmatched = 0
+    ratios: list = []
+
+    for item in raw_items:
+        code   = item['code']
+        qty    = item['quantity']
+        billed = item['billed_amount']
+
+        rate_obj = rate_cache.get(code.upper())
+
+        li = BillLineItem(
+            medical_bill_id=bill.id,
+            line_number=item['line_number'],
+            description=item['description'],
+            code=code,
+            code_type=item['code_type'],
+            quantity=qty,
+            billed_amount=billed,
+            raw_text=item.get('raw_text', item['description']),
         )
 
-        raw = response.content[0].text.strip()
-        # Strip accidental markdown fences
-        if '```' in raw:
-            raw = raw.split('```')[1]
-            if raw.lower().startswith('json'):
-                raw = raw[4:]
-        raw = raw.strip()
+        if rate_obj:
+            medicare_rate    = Decimal(str(rate_obj.rate))
+            medicare_allowed = (medicare_rate * qty).quantize(Decimal('0.01'))
+            savings          = (billed - medicare_allowed).quantize(Decimal('0.01'))
+            ratio = (billed / medicare_allowed).quantize(Decimal('0.0001')) if medicare_allowed else None
 
-        items = json.loads(raw)
-        if not isinstance(items, list):
-            return []
+            li.medicare_rate         = medicare_rate
+            li.medicare_allowed_amount = medicare_allowed
+            li.savings_amount        = savings
+            li.billing_ratio         = ratio
+            li.match_status          = 'matched'
+            li.confidence_score      = Decimal('95.00')
 
-        result = []
-        for i, item in enumerate(items, 1):
-            code = str(item.get('code') or '').strip().upper()
-            amount_raw = str(item.get('billed_amount') or '').replace(',', '').replace('$', '').strip()
-            if not code or not amount_raw:
-                continue
-            try:
-                billed = Decimal(amount_raw)
-                qty = Decimal(str(item.get('quantity', 1)))
-            except Exception:
-                continue
-            result.append({
-                'line_number': i,
-                'code':        code,
-                'code_type':   str(item.get('code_type', 'UNKNOWN')),
-                'description': str(item.get('description', '')).strip(),
-                'quantity':    qty,
-                'billed_amount': billed,
-                'raw_text':    str(item.get('description', '')).strip(),
-            })
+            total_medicare += medicare_allowed
+            if ratio:
+                ratios.append(ratio)
+            matched += 1
+        else:
+            li.match_status = (
+                'low_confidence' if item.get('confidence') == 'low' else 'unmatched'
+            )
+            unmatched += 1
 
-        return result
+        total_billed += billed
+        db.session.add(li)
 
-    except Exception as exc:
-        app.logger.warning('Claude extraction failed: %s', exc)
-        return []
+    total_savings = (total_billed - total_medicare).quantize(Decimal('0.01'))
+    savings_pct   = (
+        (total_savings / total_billed * 100).quantize(Decimal('0.01'))
+        if total_billed else Decimal('0')
+    )
+    avg_ratio = (
+        (sum(ratios) / len(ratios)).quantize(Decimal('0.0001'))
+        if ratios else Decimal('0')
+    )
+
+    bill.total_billed_amount       = total_billed
+    bill.total_medicare_amount     = total_medicare
+    bill.total_savings             = total_savings
+    bill.savings_percentage        = savings_pct
+    bill.average_billing_ratio     = avg_ratio
+    bill.line_item_count           = len(raw_items)
+    bill.matched_line_item_count   = matched
+    bill.unmatched_line_item_count = unmatched
+    bill.processing_confidence     = (
+        Decimal('95.00') if matched == len(raw_items) else Decimal('70.00')
+    )
 
 
 def process_bill(bill: 'MedicalBill') -> None:
-    """Extract text from PDF, parse line items, match Medicare rates, update bill."""
-    bill.status = 'processing'
+    """
+    Three-tier extraction pipeline — cheapest path first:
+
+      1. Table extraction  — zero tokens, instant.
+         If it yields a high-confidence result, STOP here.
+      2. Claude page-by-page tool-use  — Haiku per page, Sonnet on retry.
+         Called only when table extraction is missing or low-confidence.
+      3. Regex  — fallback when Claude is unavailable or fails.
+
+    Token cost:
+      • Tier 1 (table): 0 tokens.
+      • Tier 2 (Claude/Haiku, per page): ~500-2000 tokens input + ~200-500 output per page.
+        Typical 5-page bill ≈ 10 000 tokens total — very cheap with Haiku.
+      • Tier 3 (regex): 0 tokens.
+    """
+    import time
+    bill.status            = 'processing'
+    bill.extraction_status = 'processing'
     db.session.commit()
 
+    raw_items:           list       = []
+    extraction_method:   str        = 'table_parser'
+    extraction_model:    str | None = None
+    extraction_warnings: list[str]  = []
+    detected_row_count:  int        = 0
+    t_start = time.monotonic()
+
     try:
-        text = extract_text_from_pdf(bill.file_path)
-        if not text.strip():
-            raise ValueError('No text could be extracted from this PDF')
+        # ── Tier 1: fast table extraction (no tokens) ────────────────────────
+        t1 = time.monotonic()
+        table_items, detected_row_count = _table_extract_items(bill.file_path)
+        app.logger.info(
+            'Bill %s: table extraction — %d items / %d rows (%.2fs)',
+            bill.id, len(table_items), detected_row_count, time.monotonic() - t1,
+        )
 
-        raw_items = parse_line_items(text)
+        if _is_high_confidence_result(table_items, detected_row_count):
+            raw_items         = table_items
+            extraction_method = 'table_parser'
+            app.logger.info('Bill %s: high-confidence table result — skipping Claude', bill.id)
+        else:
+            # ── Tier 2: Claude page-by-page ──────────────────────────────────
+            api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+            if api_key:
+                t2 = time.monotonic()
+                try:
+                    result = _extract_bill_page_by_page(bill.file_path)
+                    raw_items          = _normalize_claude_items(result['line_items'])
+                    extraction_method  = result['extraction_method']
+                    extraction_model   = ', '.join(result.get('models_used') or []) or None
+                    extraction_warnings = [w for w in (result.get('warnings') or []) if w]
+                    detected_row_count  = result.get('detected_row_count', detected_row_count)
+                    for item in raw_items:
+                        if item.get('warning'):
+                            extraction_warnings.append(
+                                f'Row {item["line_number"]} ({item["code"]}): {item["warning"]}'
+                            )
+                    app.logger.info(
+                        'Bill %s: Claude extracted %d items (%.2fs)',
+                        bill.id, len(raw_items), time.monotonic() - t2,
+                    )
+                except Exception as exc:
+                    app.logger.warning('Bill %s: Claude failed — %s', bill.id, exc)
+                    extraction_warnings = []   # keep out of UI; already logged
+            else:
+                app.logger.info('Bill %s: no ANTHROPIC_API_KEY — skipping Claude', bill.id)
 
-        if not raw_items:
-            app.logger.info('Regex found 0 items for bill %s — trying Claude', bill.id)
-            raw_items = _extract_with_claude(text)
+            # ── Tier 3: regex fallback ────────────────────────────────────────
+            if not raw_items:
+                t3 = time.monotonic()
+                raw_items = _regex_extract_items(bill.file_path)
+                extraction_method = 'regex_parser'
+                app.logger.info(
+                    'Bill %s: regex found %d items (%.2fs)',
+                    bill.id, len(raw_items), time.monotonic() - t3,
+                )
 
         if not raw_items:
             raise ValueError(
                 'No line items could be extracted. '
-                'If this is a scanned bill, please upload a text-based PDF.'
+                'If this is a scanned/image-only bill, please upload a text-based PDF.'
             )
 
-        total_billed = Decimal('0')
-        total_medicare = Decimal('0')
-        matched = 0
-        unmatched = 0
-        ratios = []
+        _save_line_items(bill, raw_items)
 
-        for item in raw_items:
-            code = item['code']
-            qty = item['quantity']
-            billed = item['billed_amount']
+        # Strip any remaining technical messages before persisting
+        clean_warnings = _user_facing_warnings(extraction_warnings)
 
-            rate_obj = get_or_fetch_rate(code)
-
-            li = BillLineItem(
-                medical_bill_id=bill.id,
-                line_number=item['line_number'],
-                description=item['description'],
-                code=code,
-                code_type=item['code_type'],
-                quantity=qty,
-                billed_amount=billed,
-                raw_text=item['raw_text'],
-            )
-
-            if rate_obj:
-                medicare_rate = Decimal(str(rate_obj.rate))
-                medicare_allowed = (medicare_rate * qty).quantize(Decimal('0.01'))
-                savings = (billed - medicare_allowed).quantize(Decimal('0.01'))
-                ratio = (billed / medicare_allowed).quantize(Decimal('0.0001')) if medicare_allowed else None
-
-                li.medicare_rate = medicare_rate
-                li.medicare_allowed_amount = medicare_allowed
-                li.savings_amount = savings
-                li.billing_ratio = ratio
-                li.match_status = 'matched'
-                li.confidence_score = Decimal('95.00')
-
-                total_medicare += medicare_allowed
-                if ratio:
-                    ratios.append(ratio)
-                matched += 1
-            else:
-                li.match_status = 'unmatched'
-                unmatched += 1
-
-            total_billed += billed
-            db.session.add(li)
-
-        total_savings = (total_billed - total_medicare).quantize(Decimal('0.01'))
-        savings_pct = (total_savings / total_billed * 100).quantize(Decimal('0.01')) if total_billed else Decimal('0')
-        avg_ratio = (sum(ratios) / len(ratios)).quantize(Decimal('0.0001')) if ratios else Decimal('0')
-
-        bill.status = 'completed'
-        bill.total_billed_amount = total_billed
-        bill.total_medicare_amount = total_medicare
-        bill.total_savings = total_savings
-        bill.savings_percentage = savings_pct
-        bill.average_billing_ratio = avg_ratio
-        bill.line_item_count = len(raw_items)
-        bill.matched_line_item_count = matched
-        bill.unmatched_line_item_count = unmatched
-        bill.processing_confidence = Decimal('95.00') if matched == len(raw_items) else Decimal('70.00')
+        bill.status              = 'completed'
+        bill.extraction_status   = 'completed'
+        bill.extraction_method   = extraction_method
+        bill.extraction_model    = extraction_model
+        bill.extraction_warnings = json.dumps(clean_warnings) if clean_warnings else None
+        bill.detected_row_count  = detected_row_count
         db.session.commit()
 
         update_case_totals(bill.case_id)
+        app.logger.info('Bill %s: done — %d items total (%.2fs)', bill.id, len(raw_items), time.monotonic() - t_start)
 
-    except Exception as e:
-        bill.status = 'failed'
-        bill.error_message = str(e)
+    except Exception as exc:
+        bill.status            = 'failed'
+        bill.extraction_status = 'failed'
+        bill.error_message     = str(exc)
         db.session.commit()
 
 
@@ -1355,6 +1814,47 @@ def update_case(case_id, session):
     return success_response(data=case.to_dict())
 
 
+@app.route('/api/cases/<int:case_id>/close', methods=['POST'])
+@require_role('law_firm', 'admin')
+def close_case(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if not can_user_access_case(session['user_id'], session['role'], case):
+        return error_response('Forbidden', 403)
+    if case.status == 'closed':
+        return error_response('Case is already closed')
+
+    data = request.get_json(silent=True) or {}
+    case.status       = 'closed'
+    case.closed_at    = datetime.utcnow()
+    case.closed_by_id = session['user_id']
+    case.close_reason = (data.get('reason') or '').strip() or None
+    case.updated_at   = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=case.to_dict(), message='Case closed')
+
+
+@app.route('/api/cases/<int:case_id>/reopen', methods=['POST'])
+@require_role('law_firm', 'admin')
+def reopen_case(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if not can_user_access_case(session['user_id'], session['role'], case):
+        return error_response('Forbidden', 403)
+    if case.status != 'closed':
+        return error_response('Case is not closed')
+
+    case.status       = 'active'
+    case.closed_at    = None
+    case.closed_by_id = None
+    case.close_reason = None
+    case.updated_at   = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=case.to_dict(), message='Case reopened')
+
+
 # =============================================================================
 # 10. BILL ROUTES
 # =============================================================================
@@ -1378,6 +1878,8 @@ def upload_bill(case_id, session):
         return error_response('Funders cannot upload bills', 403)
     if not can_user_access_case(session['user_id'], role, case):
         return error_response('Forbidden', 403)
+    if case.status == 'closed':
+        return error_response('Case is closed. Reopen it before uploading bills.', 409)
 
     if 'file' not in request.files:
         return error_response('No file provided')
@@ -1387,6 +1889,7 @@ def upload_bill(case_id, session):
     if not allowed_file(file.filename):
         return error_response('Only PDF files are allowed')
 
+    display_name  = (request.form.get('display_name')  or '').strip() or None
     provider_name = (request.form.get('provider_name') or '').strip() or None
     # Auto-populate provider name from uploader's org if they are a provider
     if not provider_name and role == 'provider':
@@ -1402,6 +1905,7 @@ def upload_bill(case_id, session):
     bill = MedicalBill(
         case_id=case_id,
         uploaded_by_id=session['user_id'],
+        display_name=display_name,
         provider_name=provider_name,
         original_filename=original_filename,
         stored_filename=stored_filename,
@@ -1457,6 +1961,28 @@ def get_bill(bill_id, session):
     bill_data = bill.to_dict()
     bill_data['line_items'] = [li.to_dict() for li in bill.line_items]
     return success_response(data=bill_data)
+
+
+@app.route('/api/bills/<int:bill_id>', methods=['PATCH'])
+@require_auth
+def update_bill(bill_id, session):
+    bill = db.session.get(MedicalBill, bill_id)
+    if not bill:
+        return error_response('Bill not found', 404)
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
+        return error_response('Bill not found', 404)
+    if session['role'] == 'funder':
+        return error_response('Funders cannot edit bills', 403)
+
+    data = request.get_json(silent=True) or {}
+    if 'display_name' in data:
+        bill.display_name = (data['display_name'] or '').strip() or None
+    if 'provider_name' in data:
+        bill.provider_name = (data['provider_name'] or '').strip() or None
+
+    bill.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=bill.to_dict())
 
 
 @app.route('/api/bills/<int:bill_id>/line-items', methods=['GET'])
@@ -1533,6 +2059,85 @@ def reject_funding(bill_id, session):
     return success_response(data=bill.to_dict(), message='Funding rejected')
 
 
+@app.route('/api/bills/<int:bill_id>/reprocess-with-claude', methods=['POST'])
+@require_role('law_firm', 'admin')
+def reprocess_bill_with_claude(bill_id, session):
+    """
+    Re-run Claude page-by-page extraction on an already-uploaded bill.
+
+    IMPORTANT: Runs Claude FIRST without touching existing line items.
+    Only replaces old items if Claude succeeds — failed extraction never
+    overwrites the previous result.
+    """
+    bill = db.session.get(MedicalBill, bill_id)
+    if not bill:
+        return error_response('Bill not found', 404)
+    if not can_user_access_bill(session['user_id'], session['role'], bill):
+        return error_response('Forbidden', 403)
+    if not os.path.exists(bill.file_path):
+        return error_response('Original PDF file not found on disk — cannot reprocess', 422)
+    if bill.funding_status == 'funded':
+        return error_response('Cannot reprocess a funded bill', 422)
+
+    api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+    if not api_key:
+        return error_response('ANTHROPIC_API_KEY is not set — cannot run Claude extraction', 503)
+
+    # ── Run Claude extraction WITHOUT touching existing items ─────────────────
+    try:
+        result   = _extract_bill_page_by_page(bill.file_path)
+        raw_items = _normalize_claude_items(result['line_items'])
+    except Exception as exc:
+        app.logger.warning('Reprocess bill %s: Claude failed — %s', bill_id, exc)
+        return error_response(
+            f'Claude extraction failed: {exc}. '
+            'Existing line items have been preserved.',
+            422,
+        )
+
+    if not raw_items:
+        return error_response(
+            'Claude returned no line items. Existing line items have been preserved.',
+            422,
+        )
+
+    # ── Claude succeeded — NOW replace old items ──────────────────────────────
+    for li in list(bill.line_items):
+        db.session.delete(li)
+    db.session.flush()
+
+    warnings = result.get('warnings') or []
+    for item in raw_items:
+        if item.get('warning'):
+            warnings.append(f'Row {item["line_number"]} ({item["code"]}): {item["warning"]}')
+
+    _save_line_items(bill, raw_items)
+
+    bill.status             = 'completed'
+    bill.extraction_status  = 'completed'
+    bill.extraction_method  = result['extraction_method']
+    bill.extraction_model   = ', '.join(result.get('models_used') or []) or None
+    clean_warnings = _user_facing_warnings(warnings)
+    bill.extraction_warnings = json.dumps(clean_warnings) if clean_warnings else None
+    bill.detected_row_count  = result.get('detected_row_count', 0)
+    bill.error_message       = None
+    db.session.commit()
+
+    update_case_totals(bill.case_id)
+    db.session.refresh(bill)
+
+    bill_data = bill.to_dict()
+    bill_data['line_items'] = [li.to_dict() for li in bill.line_items]
+    return success_response(
+        data=bill_data,
+        message=(
+            f'Reprocessed: {bill.line_item_count} items extracted '
+            f'(detected ~{bill.detected_row_count} row candidates) '
+            f'via {bill.extraction_method}'
+        ),
+    )
+
+
 # =============================================================================
 # 10.5  ASSIGNMENT ROUTES
 # =============================================================================
@@ -1556,6 +2161,8 @@ def create_assignment(case_id, session):
         return error_response('Case not found', 404)
     if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
         return error_response('Forbidden', 403)
+    if case.status == 'closed':
+        return error_response('Case is closed. Reopen it before changing assignments.', 409)
 
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id')
@@ -2055,6 +2662,8 @@ def create_funding_batch(case_id, session):
         return error_response('Case not found', 404)
     if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
         return error_response('Forbidden', 403)
+    if case.status == 'closed':
+        return error_response('Case is closed. Reopen it before creating funding batches.', 409)
     data = request.get_json(silent=True) or {}
     # Inject provider from case assignments if not supplied
     if not data.get('provider_id'):
@@ -2403,58 +3012,119 @@ def dashboard_summary(session):
     }
 
     if role == 'law_firm':
+        from sqlalchemy import func as _lfunc
         case_ids = [c.id for c in cases]
         data['bills_awaiting_funder'] = MedicalBill.query.join(PatientCase).filter(
             PatientCase.law_firm_id == user_id,
             MedicalBill.funding_status == 'funding_requested',
+        ).count()
+        data['bills_uploaded'] = MedicalBill.query.join(PatientCase).filter(
+            PatientCase.law_firm_id == user_id,
         ).count()
         data['active_cases'] = sum(1 for c in cases if c.status == 'active')
         data['ready_for_funding'] = sum(
             1 for c in cases if c.status == 'ready_for_funding'
         )
         data['draft_batches'] = FundingBatch.query.filter(
-            FundingBatch.case_id.in_(case_ids),
+            FundingBatch.law_firm_id == user_id,
             FundingBatch.status == 'draft',
         ).count()
         data['submitted_batches'] = FundingBatch.query.filter(
-            FundingBatch.case_id.in_(case_ids),
-            FundingBatch.status.in_(['submitted', 'funder_review']),
+            FundingBatch.law_firm_id == user_id,
+            FundingBatch.status.in_(['submitted', 'funder_review', 'partially_funded']),
         ).count()
         data['funded_batches'] = FundingBatch.query.filter(
-            FundingBatch.case_id.in_(case_ids),
+            FundingBatch.law_firm_id == user_id,
             FundingBatch.status == 'funded',
         ).count()
+        # Financial totals across all active + funded batches for this law firm
+        _active_statuses = ('draft', 'submitted', 'funder_review', 'partially_funded', 'funded')
+        lf_spread_row = db.session.query(
+            _lfunc.sum(FundingBatch.total_law_firm_spread_amount)
+        ).filter(
+            FundingBatch.law_firm_id == user_id,
+            FundingBatch.status.in_(_active_statuses),
+        ).scalar()
+        funder_funding_row = db.session.query(
+            _lfunc.sum(FundingBatch.total_funder_funding_amount)
+        ).filter(
+            FundingBatch.law_firm_id == user_id,
+            FundingBatch.status.in_(_active_statuses),
+        ).scalar()
+        provider_payout_row = db.session.query(
+            _lfunc.sum(FundingBatch.total_provider_negotiated_payout)
+        ).filter(
+            FundingBatch.law_firm_id == user_id,
+            FundingBatch.status.in_(_active_statuses),
+        ).scalar()
+        data['total_law_firm_spread']    = str(lf_spread_row or Decimal('0'))
+        data['total_funder_funding']     = str(funder_funding_row or Decimal('0'))
+        data['total_provider_payout']    = str(provider_payout_row or Decimal('0'))
+        data['closed_cases'] = sum(1 for c in cases if c.status == 'closed')
 
     elif role == 'provider':
-        assigned_case_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
-        data['my_bills_count'] = MedicalBill.query.filter_by(
-            uploaded_by_id=user_id
+        from sqlalchemy import func as _pfunc
+        data['my_bills_count'] = MedicalBill.query.join(PatientCase).filter(
+            PatientCase.id.in_([c.id for c in cases])
         ).count()
-        data['bills_pending_review'] = MedicalBill.query.filter_by(
-            uploaded_by_id=user_id, status='uploaded'
+        data['bills_pending_review'] = MedicalBill.query.join(PatientCase).filter(
+            PatientCase.id.in_([c.id for c in cases]),
+            MedicalBill.status == 'uploaded',
         ).count()
-        data['batch_count'] = FundingBatch.query.filter(
-            FundingBatch.case_id.in_(assigned_case_ids)
-        ).count()
-
-    elif role == 'funder':
         data['pending_batches'] = FundingBatch.query.filter(
-            FundingBatch.assigned_funder_id == user_id,
-            FundingBatch.status.in_(['submitted', 'funder_review']),
+            FundingBatch.provider_id == user_id,
+            FundingBatch.status.in_(['submitted', 'funder_review', 'partially_funded']),
         ).count()
         data['funded_batches'] = FundingBatch.query.filter(
-            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.provider_id == user_id,
             FundingBatch.status == 'funded',
         ).count()
-        data['ready_for_funding'] = sum(
-            1 for c in cases if c.status in ('ready_for_funding', 'funder_review')
+        # Provider payout: include draft + active + funded batches so the card
+        # shows expected payout as soon as a batch is created (even in draft).
+        # Falls back to total_medicare (case-level, default multiplier = 1.0) when
+        # no batches exist yet.
+        payout_from_batches = db.session.query(
+            _pfunc.sum(FundingBatch.total_provider_negotiated_payout)
+        ).filter(
+            FundingBatch.provider_id == user_id,
+            FundingBatch.status.in_(['draft', 'submitted', 'funder_review', 'partially_funded', 'funded']),
+        ).scalar() or Decimal('0')
+        data['total_provider_payout'] = str(
+            payout_from_batches if payout_from_batches > 0 else total_medicare
         )
-        # Legacy bill-level metric kept for compatibility
-        assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
-        data['pending_review'] = MedicalBill.query.filter(
-            MedicalBill.case_id.in_(assigned_ids),
-            MedicalBill.funding_status.in_(['funding_requested', 'under_review']),
-        ).count()
+
+    elif role == 'funder':
+        pending_q = FundingBatch.query.filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status.in_(['submitted', 'funder_review', 'partially_funded']),
+        )
+        funded_q = FundingBatch.query.filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status == 'funded',
+        )
+        rejected_q = FundingBatch.query.filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status == 'rejected',
+        )
+        from sqlalchemy import func as _func2
+        data['pending_batches']  = pending_q.count()
+        data['funded_batches']   = funded_q.count()
+        data['rejected_batches'] = rejected_q.count()
+        # Funding exposure = sum of funder funding amounts on pending batches
+        exposure = db.session.query(
+            _func2.sum(FundingBatch.total_funder_funding_amount)
+        ).filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status.in_(['submitted', 'funder_review', 'partially_funded']),
+        ).scalar()
+        funded_total = db.session.query(
+            _func2.sum(FundingBatch.total_funder_funding_amount)
+        ).filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status == 'funded',
+        ).scalar()
+        data['funding_exposure'] = str(exposure or Decimal('0'))
+        data['total_funded_amount'] = str(funded_total or Decimal('0'))
 
     elif role == 'admin':
         data['pending_review'] = MedicalBill.query.filter(
@@ -2788,9 +3458,27 @@ def internal_error(e):
 # =============================================================================
 
 # Auto-create tables and upload dir on first import (idempotent).
+# Also add any new columns to existing SQLite DBs so old installs don't break.
+def _migrate_add_column(table: str, column: str, definition: str) -> None:
+    try:
+        db.session.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {definition}'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()  # Column already exists — safe to ignore
+
+
 with app.app_context():
     db.create_all()
     ensure_upload_dir()
+    _migrate_add_column('patient_cases', 'closed_at',    'DATETIME')
+    _migrate_add_column('patient_cases', 'closed_by_id', 'INTEGER')
+    _migrate_add_column('patient_cases', 'close_reason', 'TEXT')
+    _migrate_add_column('medical_bills', 'display_name',        'VARCHAR(255)')
+    _migrate_add_column('medical_bills', 'extraction_method',   'VARCHAR(50)')
+    _migrate_add_column('medical_bills', 'extraction_model',    'VARCHAR(200)')
+    _migrate_add_column('medical_bills', 'extraction_warnings', 'TEXT')
+    _migrate_add_column('medical_bills', 'extraction_status',   'VARCHAR(50)')
+    _migrate_add_column('medical_bills', 'detected_row_count',  'INTEGER DEFAULT 0')
 
 if __name__ == '__main__':
     port = int(os.getenv('FLASK_RUN_PORT', 5001))
