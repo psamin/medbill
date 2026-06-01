@@ -16,7 +16,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from sqlalchemy import text, Numeric
+from sqlalchemy import text, Numeric, or_
 import redis
 
 # =============================================================================
@@ -36,6 +36,14 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 SESSION_TTL = int(os.getenv('SESSION_TTL_SECONDS', 86400))
 
 CORS(app, origins=[FRONTEND_URL], supports_credentials=True)
+
+# =============================================================================
+# 2.5  FUNDING MATH CONSTANTS
+# Change these to update the entire funding pipeline in one place.
+# =============================================================================
+DEFAULT_NEGOTIATED_RATE_MULTIPLIER = Decimal(os.getenv('DEFAULT_NEGOTIATED_RATE_MULTIPLIER', '1.00'))
+FUNDER_MEDICARE_MULTIPLIER         = Decimal(os.getenv('FUNDER_MEDICARE_MULTIPLIER', '1.60'))
+LAW_FIRM_SPREAD_PERCENT            = Decimal(os.getenv('LAW_FIRM_SPREAD_PERCENT', '0.60'))
 
 # =============================================================================
 # 3. DATABASE SETUP
@@ -281,6 +289,204 @@ class CaseAssignment(db.Model):
         }
 
 
+class NegotiatedCptRate(db.Model):
+    """CPT/HCPCS-code-specific negotiated Medicare multiplier for a law firm + provider pair.
+    One law firm and provider can have many CPT-specific rates forming their fee schedule."""
+    __tablename__ = 'negotiated_cpt_rates'
+
+    id = db.Column(db.Integer, primary_key=True)
+    law_firm_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    provider_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    cpt_code = db.Column(db.String(20), nullable=False)
+    # Provider receives (medicare_allowed_amount × this multiplier)
+    medicare_anchor_multiplier = db.Column(Numeric(8, 4), nullable=False, default=Decimal('1.00'))
+    negotiated_price = db.Column(Numeric(12, 2), nullable=True)  # optional absolute price
+    notes = db.Column(db.Text, nullable=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    effective_start_date = db.Column(db.Date, nullable=True)
+    effective_end_date = db.Column(db.Date, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    law_firm = db.relationship('User', foreign_keys=[law_firm_id])
+    provider_user = db.relationship('User', foreign_keys=[provider_id])
+
+    __table_args__ = (
+        db.UniqueConstraint('law_firm_id', 'provider_id', 'cpt_code',
+                            name='uq_negotiated_cpt_rate'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'law_firm_id': self.law_firm_id,
+            'provider_id': self.provider_id,
+            'cpt_code': self.cpt_code,
+            'medicare_anchor_multiplier': str(self.medicare_anchor_multiplier),
+            'negotiated_price': str(self.negotiated_price) if self.negotiated_price is not None else None,
+            'notes': self.notes,
+            'active': self.active,
+            'effective_start_date': self.effective_start_date.isoformat() if self.effective_start_date else None,
+            'effective_end_date': self.effective_end_date.isoformat() if self.effective_end_date else None,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+
+class FundingBatch(db.Model):
+    """A bundle of bills/line items submitted together for funder review and funding.
+    Batches are typically created on 15-day cycles; the law firm manually selects which items."""
+    __tablename__ = 'funding_batches'
+
+    id = db.Column(db.Integer, primary_key=True)
+    batch_name = db.Column(db.String(255), nullable=True)
+    # law_firm and provider are explicit so a batch can span multiple cases
+    law_firm_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    provider_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    case_id = db.Column(db.Integer, db.ForeignKey('patient_cases.id'), nullable=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    assigned_funder_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    # date window used to find eligible bills (guidance only, not enforced)
+    batch_start_date = db.Column(db.Date, nullable=True)
+    batch_end_date = db.Column(db.Date, nullable=True)
+    batch_period_days = db.Column(db.Integer, default=15, nullable=False)
+    # draft | submitted | funder_review | funded | rejected | closed
+    status = db.Column(db.String(50), default='draft', nullable=False)
+    bill_count = db.Column(db.Integer, default=0)
+    line_item_count = db.Column(db.Integer, default=0)
+    total_billed_amount = db.Column(Numeric(12, 2), default=0)
+    total_medicare_amount = db.Column(Numeric(12, 2), default=0)
+    total_provider_negotiated_payout = db.Column(Numeric(12, 2), default=0)
+    total_funder_funding_amount = db.Column(Numeric(12, 2), default=0)
+    total_spread_amount = db.Column(Numeric(12, 2), default=0)
+    total_law_firm_spread_amount = db.Column(Numeric(12, 2), default=0)
+    total_remaining_spread_amount = db.Column(Numeric(12, 2), default=0)
+    rejection_reason = db.Column(db.Text, nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    case = db.relationship('PatientCase', backref=db.backref('funding_batches', lazy=True))
+    law_firm = db.relationship('User', foreign_keys=[law_firm_id])
+    provider = db.relationship('User', foreign_keys=[provider_id])
+    created_by = db.relationship('User', foreign_keys=[created_by_id])
+    assigned_funder = db.relationship('User', foreign_keys=[assigned_funder_id])
+    items = db.relationship('FundingBatchItem', backref='batch', lazy=True,
+                            cascade='all, delete-orphan')
+
+    def to_dict(self, include_items=False):
+        d = {
+            'id': self.id,
+            'batch_name': self.batch_name,
+            'law_firm_id': self.law_firm_id,
+            'law_firm_org': self.law_firm.organization_name if self.law_firm else None,
+            'provider_id': self.provider_id,
+            'provider_org': self.provider.organization_name if self.provider else None,
+            'case_id': self.case_id,
+            'created_by_id': self.created_by_id,
+            'assigned_funder_id': self.assigned_funder_id,
+            'assigned_funder_org': self.assigned_funder.organization_name if self.assigned_funder else None,
+            'batch_start_date': self.batch_start_date.isoformat() if self.batch_start_date else None,
+            'batch_end_date': self.batch_end_date.isoformat() if self.batch_end_date else None,
+            'batch_period_days': self.batch_period_days,
+            'status': self.status,
+            'bill_count': self.bill_count,
+            'line_item_count': self.line_item_count,
+            'item_count': len(self.items),
+            'total_billed_amount': str(self.total_billed_amount),
+            'total_medicare_amount': str(self.total_medicare_amount),
+            'total_provider_negotiated_payout': str(self.total_provider_negotiated_payout),
+            'total_funder_funding_amount': str(self.total_funder_funding_amount),
+            'total_spread_amount': str(self.total_spread_amount),
+            'total_law_firm_spread_amount': str(self.total_law_firm_spread_amount),
+            'total_remaining_spread_amount': str(self.total_remaining_spread_amount),
+            'rejection_reason': self.rejection_reason,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+        if include_items:
+            d['items'] = [i.to_dict() for i in self.items]
+        return d
+
+
+class FundingBatchItem(db.Model):
+    """A single bill (or line item within a bill) in a FundingBatch.
+    Each item applies its own CPT-specific negotiated rate for the funding math."""
+    __tablename__ = 'funding_batch_items'
+
+    id = db.Column(db.Integer, primary_key=True)
+    funding_batch_id = db.Column(db.Integer, db.ForeignKey('funding_batches.id'), nullable=False)
+    case_id = db.Column(db.Integer, db.ForeignKey('patient_cases.id'), nullable=True)
+    bill_id = db.Column(db.Integer, db.ForeignKey('medical_bills.id'), nullable=False)
+    line_item_id = db.Column(db.Integer, db.ForeignKey('bill_line_items.id'), nullable=True)
+    # Which CPT rate was applied (null if using default)
+    negotiated_cpt_rate_id = db.Column(
+        db.Integer, db.ForeignKey('negotiated_cpt_rates.id'), nullable=True
+    )
+    cpt_code = db.Column(db.String(20), nullable=True)
+    description = db.Column(db.Text, nullable=True)
+    quantity = db.Column(Numeric(8, 2), default=1)
+    billed_amount = db.Column(Numeric(12, 2), default=0)
+    medicare_allowed_amount = db.Column(Numeric(12, 2), default=0)
+    negotiated_cpt_multiplier = db.Column(Numeric(8, 4), nullable=False)
+    provider_negotiated_payout = db.Column(Numeric(12, 2), default=0)
+    funder_medicare_multiplier = db.Column(Numeric(8, 4), nullable=False)
+    funder_funding_amount = db.Column(Numeric(12, 2), default=0)
+    spread_amount = db.Column(Numeric(12, 2), default=0)
+    law_firm_spread_percent = db.Column(Numeric(8, 4), nullable=False)
+    law_firm_spread_amount = db.Column(Numeric(12, 2), default=0)
+    remaining_spread_amount = db.Column(Numeric(12, 2), default=0)
+    used_default_rate = db.Column(db.Boolean, default=False, nullable=False)
+    warning = db.Column(db.Text, nullable=True)
+    # Item-level fund/reject (funder can act on individual items)
+    item_status = db.Column(db.String(20), default='pending', nullable=False)
+    item_rejection_reason = db.Column(db.Text, nullable=True)
+    funded_at = db.Column(db.DateTime, nullable=True)
+    funded_by_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    bill = db.relationship('MedicalBill')
+    line_item = db.relationship('BillLineItem')
+    negotiated_cpt_rate = db.relationship('NegotiatedCptRate')
+    funded_by = db.relationship('User', foreign_keys=[funded_by_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'funding_batch_id': self.funding_batch_id,
+            'case_id': self.case_id,
+            'bill_id': self.bill_id,
+            'line_item_id': self.line_item_id,
+            'negotiated_cpt_rate_id': self.negotiated_cpt_rate_id,
+            'cpt_code': self.cpt_code,
+            'description': self.description,
+            'quantity': str(self.quantity),
+            'billed_amount': str(self.billed_amount),
+            'medicare_allowed_amount': str(self.medicare_allowed_amount),
+            'negotiated_cpt_multiplier': str(self.negotiated_cpt_multiplier),
+            'provider_negotiated_payout': str(self.provider_negotiated_payout),
+            'funder_medicare_multiplier': str(self.funder_medicare_multiplier),
+            'funder_funding_amount': str(self.funder_funding_amount),
+            'spread_amount': str(self.spread_amount),
+            'law_firm_spread_percent': str(self.law_firm_spread_percent),
+            'law_firm_spread_amount': str(self.law_firm_spread_amount),
+            'remaining_spread_amount': str(self.remaining_spread_amount),
+            'used_default_rate': self.used_default_rate,
+            'warning': self.warning,
+            'item_status': self.item_status,
+            'item_rejection_reason': self.item_rejection_reason,
+            'funded_at': self.funded_at.isoformat() if self.funded_at else None,
+            'funded_by_id': self.funded_by_id,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+
 # =============================================================================
 # 6. HELPER FUNCTIONS
 # =============================================================================
@@ -372,6 +578,147 @@ def parse_line_items(text: str) -> list:
     return items
 
 
+def _resolve_cpt_rate(
+    law_firm_id: int,
+    provider_id: int,
+    cpt_code: 'str | None',
+) -> 'tuple[Decimal, NegotiatedCptRate | None, bool, str | None]':
+    """
+    Look up the negotiated multiplier for a specific CPT/HCPCS code for a law firm + provider pair.
+    Returns (multiplier, rate_obj_or_None, used_default, warning_or_None).
+
+    Priority:
+      1. Active NegotiatedCptRate for law_firm + provider + cpt_code
+      2. DEFAULT_NEGOTIATED_RATE_MULTIPLIER with a warning
+    """
+    if cpt_code:
+        today = datetime.utcnow().date()
+        rate = NegotiatedCptRate.query.filter_by(
+            law_firm_id=law_firm_id,
+            provider_id=provider_id,
+            cpt_code=cpt_code.upper(),
+            active=True,
+        ).filter(
+            or_(
+                NegotiatedCptRate.effective_end_date.is_(None),
+                NegotiatedCptRate.effective_end_date >= today,
+            )
+        ).first()
+
+        if rate:
+            return Decimal(str(rate.medicare_anchor_multiplier)), rate, False, None
+
+    warning = (
+        f'No negotiated CPT rate found for {cpt_code or "unknown code"}, using default multiplier.'
+    )
+    return DEFAULT_NEGOTIATED_RATE_MULTIPLIER, None, True, warning
+
+
+def _build_batch_items_from_bill(
+    bill: 'MedicalBill',
+    batch_id: int,
+    law_firm_id: int,
+    provider_id: int,
+    case_id: 'int | None' = None,
+) -> 'list[FundingBatchItem]':
+    """
+    Expand a bill into FundingBatchItems, resolving the CPT-specific negotiated rate per line item.
+    Prefers matched line items; falls back to a single bill-level item when none are available.
+    """
+    matched = [
+        li for li in bill.line_items
+        if li.match_status == 'matched' and li.medicare_allowed_amount
+    ]
+    items: list[FundingBatchItem] = []
+
+    if matched:
+        for li in matched:
+            mult, rate_obj, used_default, warn = _resolve_cpt_rate(
+                law_firm_id, provider_id, li.code
+            )
+            math = calculate_funding_math(
+                billed_amount=Decimal(str(li.billed_amount)),
+                medicare_allowed_amount=Decimal(str(li.medicare_allowed_amount)),
+                negotiated_cpt_multiplier=mult,
+                cpt_code=li.code,
+                used_default_rate=used_default,
+                warning=warn,
+            )
+            items.append(FundingBatchItem(
+                funding_batch_id=batch_id,
+                case_id=case_id or bill.case_id,
+                bill_id=bill.id,
+                line_item_id=li.id,
+                negotiated_cpt_rate_id=rate_obj.id if rate_obj else None,
+                cpt_code=li.code,
+                description=li.description,
+                quantity=li.quantity,
+                billed_amount=math['billed_amount'],
+                medicare_allowed_amount=math['medicare_allowed_amount'],
+                negotiated_cpt_multiplier=math['negotiated_cpt_multiplier'],
+                provider_negotiated_payout=math['provider_negotiated_payout'],
+                funder_medicare_multiplier=math['funder_medicare_multiplier'],
+                funder_funding_amount=math['funder_funding_amount'],
+                spread_amount=math['spread_amount'],
+                law_firm_spread_percent=math['law_firm_spread_percent'],
+                law_firm_spread_amount=math['law_firm_spread_amount'],
+                remaining_spread_amount=math['remaining_spread_amount'],
+                used_default_rate=math['used_default_rate'],
+                warning=math['warning'],
+            ))
+    elif bill.total_medicare_amount and Decimal(str(bill.total_medicare_amount)) > 0:
+        # Bill-level fallback: no CPT resolution possible, use default
+        mult, _, _, warn = _resolve_cpt_rate(law_firm_id, provider_id, None)
+        math = calculate_funding_math(
+            billed_amount=Decimal(str(bill.total_billed_amount)),
+            medicare_allowed_amount=Decimal(str(bill.total_medicare_amount)),
+            negotiated_cpt_multiplier=mult,
+            cpt_code=None,
+            used_default_rate=True,
+            warning='Bill-level aggregation; no CPT-specific rate available.',
+        )
+        items.append(FundingBatchItem(
+            funding_batch_id=batch_id,
+            case_id=case_id or bill.case_id,
+            bill_id=bill.id,
+            line_item_id=None,
+            negotiated_cpt_rate_id=None,
+            cpt_code=None,
+            description=bill.provider_name or bill.original_filename,
+            quantity=Decimal('1'),
+            billed_amount=math['billed_amount'],
+            medicare_allowed_amount=math['medicare_allowed_amount'],
+            negotiated_cpt_multiplier=math['negotiated_cpt_multiplier'],
+            provider_negotiated_payout=math['provider_negotiated_payout'],
+            funder_medicare_multiplier=math['funder_medicare_multiplier'],
+            funder_funding_amount=math['funder_funding_amount'],
+            spread_amount=math['spread_amount'],
+            law_firm_spread_percent=math['law_firm_spread_percent'],
+            law_firm_spread_amount=math['law_firm_spread_amount'],
+            remaining_spread_amount=math['remaining_spread_amount'],
+            used_default_rate=True,
+            warning=math['warning'],
+        ))
+
+    return items
+
+
+def _recalculate_batch_totals(batch: 'FundingBatch') -> None:
+    """Recompute batch aggregate and count columns from its current items."""
+    items = batch.items
+    batch.total_billed_amount               = sum(Decimal(str(i.billed_amount)) for i in items)
+    batch.total_medicare_amount             = sum(Decimal(str(i.medicare_allowed_amount)) for i in items)
+    batch.total_provider_negotiated_payout  = sum(Decimal(str(i.provider_negotiated_payout)) for i in items)
+    batch.total_funder_funding_amount       = sum(Decimal(str(i.funder_funding_amount)) for i in items)
+    batch.total_spread_amount               = sum(Decimal(str(i.spread_amount)) for i in items)
+    batch.total_law_firm_spread_amount      = sum(Decimal(str(i.law_firm_spread_amount)) for i in items)
+    # bill_count = distinct bills; line_item_count = items that are tied to a specific line item
+    batch.bill_count       = len({i.bill_id for i in items})
+    batch.line_item_count  = sum(1 for i in items if i.line_item_id is not None)
+    batch.total_remaining_spread_amount     = sum(Decimal(str(i.remaining_spread_amount)) for i in items)
+    batch.updated_at = datetime.utcnow()
+
+
 def update_case_totals(case_id: int) -> None:
     case = db.session.get(PatientCase, case_id)
     if not case:
@@ -382,6 +729,54 @@ def update_case_totals(case_id: int) -> None:
     case.total_savings = sum(Decimal(str(b.total_savings or 0)) for b in completed)
     case.updated_at = datetime.utcnow()
     db.session.commit()
+
+
+def calculate_funding_math(
+    billed_amount: Decimal,
+    medicare_allowed_amount: Decimal,
+    negotiated_cpt_multiplier: Decimal,
+    cpt_code: 'str | None' = None,
+    used_default_rate: bool = False,
+    warning: 'str | None' = None,
+) -> dict:
+    """
+    Single source of truth for all funding calculations.
+    Takes a pre-resolved negotiated_cpt_multiplier (look it up with _resolve_cpt_rate first).
+    medicare_allowed_amount = medicare_rate × quantity (must be pre-computed).
+    Spread may be negative; it is stored and surfaced as-is — we never crash on it.
+    """
+    q2 = Decimal('0.01')
+    q4 = Decimal('0.0001')
+
+    provider_negotiated_payout = (medicare_allowed_amount * negotiated_cpt_multiplier).quantize(q2)
+    funder_funding_amount      = (medicare_allowed_amount * FUNDER_MEDICARE_MULTIPLIER).quantize(q2)
+    spread_amount              = (funder_funding_amount - provider_negotiated_payout).quantize(q2)
+    law_firm_spread_amount     = (spread_amount * LAW_FIRM_SPREAD_PERCENT).quantize(q2)
+    remaining_spread_amount    = (spread_amount - law_firm_spread_amount).quantize(q2)
+    savings_vs_billed          = (billed_amount - funder_funding_amount).quantize(q2)
+    billing_ratio              = (
+        (billed_amount / medicare_allowed_amount).quantize(q4)
+        if medicare_allowed_amount
+        else None
+    )
+
+    return {
+        'cpt_code':                   cpt_code,
+        'billed_amount':              billed_amount,
+        'medicare_allowed_amount':    medicare_allowed_amount,
+        'negotiated_cpt_multiplier':  negotiated_cpt_multiplier,
+        'provider_negotiated_payout': provider_negotiated_payout,
+        'funder_medicare_multiplier': FUNDER_MEDICARE_MULTIPLIER,
+        'funder_funding_amount':      funder_funding_amount,
+        'spread_amount':              spread_amount,
+        'law_firm_spread_percent':    LAW_FIRM_SPREAD_PERCENT,
+        'law_firm_spread_amount':     law_firm_spread_amount,
+        'remaining_spread_amount':    remaining_spread_amount,
+        'savings_vs_billed':          savings_vs_billed,
+        'billing_ratio':              billing_ratio,
+        'used_default_rate':          used_default_rate,
+        'warning':                    warning,
+    }
 
 
 RATE_CACHE_TTL = int(os.getenv('RATE_CACHE_TTL_SECONDS', 86400))
@@ -859,6 +1254,9 @@ VALID_STATUSES = (
     'bills_uploaded',
     'provider_review',
     'ready_for_funding',
+    'ready_for_batching',
+    'batch_created',
+    'batch_submitted',
     'funder_review',
     'funded',
     'rejected',
@@ -1222,6 +1620,691 @@ def list_assignable_users(session):
 
 
 # =============================================================================
+# 10.6  NEGOTIATED CPT RATE ROUTES
+# Rates are per CPT/HCPCS code for a specific law firm + provider pair.
+# =============================================================================
+
+@app.route('/api/negotiated-cpt-rates', methods=['GET'])
+@require_auth
+def list_negotiated_cpt_rates(session):
+    """
+    Returns negotiated CPT rates visible to the caller.
+    Query params: provider_id, law_firm_id (admin only), cpt_code.
+    """
+    role = session['role']
+    user_id = session['user_id']
+    q = NegotiatedCptRate.query
+
+    if role == 'law_firm':
+        q = q.filter_by(law_firm_id=user_id)
+    elif role == 'admin':
+        if request.args.get('law_firm_id'):
+            q = q.filter_by(law_firm_id=request.args.get('law_firm_id', type=int))
+    elif role in ('provider', 'funder'):
+        q = q.filter_by(provider_id=user_id)
+
+    if request.args.get('provider_id'):
+        q = q.filter_by(provider_id=request.args.get('provider_id', type=int))
+    if request.args.get('cpt_code'):
+        q = q.filter_by(cpt_code=request.args.get('cpt_code').upper())
+    if request.args.get('active_only', 'true').lower() == 'true':
+        q = q.filter_by(active=True)
+
+    rates = q.order_by(NegotiatedCptRate.cpt_code).all()
+    return success_response(data=[r.to_dict() for r in rates])
+
+
+@app.route('/api/negotiated-cpt-rates', methods=['POST'])
+@require_role('law_firm', 'admin')
+def create_negotiated_cpt_rate(session):
+    data = request.get_json(silent=True) or {}
+    provider_id = data.get('provider_id')
+    cpt_code = (data.get('cpt_code') or '').strip().upper()
+
+    if not provider_id:
+        return error_response('provider_id is required')
+    if not cpt_code:
+        return error_response('cpt_code is required')
+
+    provider = db.session.get(User, provider_id)
+    if not provider or provider.role != 'provider':
+        return error_response('provider_id must reference a provider user')
+
+    try:
+        multiplier = Decimal(str(data.get('medicare_anchor_multiplier', '1.00')))
+        if multiplier <= 0:
+            raise ValueError
+    except (ValueError, Exception):
+        return error_response('medicare_anchor_multiplier must be a positive number')
+
+    law_firm_id = session['user_id'] if session['role'] == 'law_firm' else data.get('law_firm_id')
+    if not law_firm_id:
+        return error_response('law_firm_id is required for admin')
+
+    # Upsert: deactivate any existing rate for this exact triple, then insert new
+    NegotiatedCptRate.query.filter_by(
+        law_firm_id=law_firm_id, provider_id=provider_id, cpt_code=cpt_code, active=True
+    ).update({'active': False})
+
+    rate = NegotiatedCptRate(
+        law_firm_id=law_firm_id,
+        provider_id=provider_id,
+        cpt_code=cpt_code,
+        medicare_anchor_multiplier=multiplier,
+        negotiated_price=data.get('negotiated_price'),
+        notes=(data.get('notes') or '').strip() or None,
+        active=True,
+        effective_start_date=data.get('effective_start_date') or None,
+        effective_end_date=data.get('effective_end_date') or None,
+    )
+    db.session.add(rate)
+    db.session.commit()
+    return success_response(data=rate.to_dict(), status_code=201)
+
+
+@app.route('/api/negotiated-cpt-rates/<int:rate_id>', methods=['PATCH'])
+@require_role('law_firm', 'admin')
+def update_negotiated_cpt_rate(rate_id, session):
+    rate = db.session.get(NegotiatedCptRate, rate_id)
+    if not rate:
+        return error_response('Negotiated CPT rate not found', 404)
+    if session['role'] == 'law_firm' and rate.law_firm_id != session['user_id']:
+        return error_response('Forbidden', 403)
+
+    data = request.get_json(silent=True) or {}
+    if 'medicare_anchor_multiplier' in data:
+        try:
+            m = Decimal(str(data['medicare_anchor_multiplier']))
+            if m <= 0:
+                raise ValueError
+            rate.medicare_anchor_multiplier = m
+        except (ValueError, Exception):
+            return error_response('medicare_anchor_multiplier must be a positive number')
+    if 'notes' in data:
+        rate.notes = (data['notes'] or '').strip() or None
+    if 'active' in data:
+        rate.active = bool(data['active'])
+    if 'effective_end_date' in data:
+        rate.effective_end_date = data['effective_end_date'] or None
+    if 'negotiated_price' in data:
+        rate.negotiated_price = data['negotiated_price']
+
+    rate.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=rate.to_dict())
+
+
+@app.route('/api/negotiated-cpt-rates/<int:rate_id>', methods=['DELETE'])
+@require_role('law_firm', 'admin')
+def deactivate_negotiated_cpt_rate(rate_id, session):
+    rate = db.session.get(NegotiatedCptRate, rate_id)
+    if not rate:
+        return error_response('Negotiated CPT rate not found', 404)
+    if session['role'] == 'law_firm' and rate.law_firm_id != session['user_id']:
+        return error_response('Forbidden', 403)
+    rate.active = False
+    rate.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(message=f'CPT rate {rate.cpt_code} deactivated')
+
+
+# =============================================================================
+# 10.7  FUNDING BATCH ROUTES
+# =============================================================================
+
+BATCH_VALID_STATUSES = ('draft', 'submitted', 'funder_review', 'partially_funded', 'funded', 'rejected', 'closed')
+# Statuses that mean a line item is "taken" and cannot be re-batched
+_ACTIVE_BATCH_STATUSES = ('draft', 'submitted', 'funder_review', 'funded')
+
+
+def _can_access_batch(user_id: int, role: str, batch: 'FundingBatch') -> bool:
+    if role == 'admin':
+        return True
+    if role == 'law_firm':
+        return batch.law_firm_id == user_id
+    if role == 'funder':
+        return batch.assigned_funder_id == user_id
+    if role == 'provider':
+        return batch.provider_id == user_id
+    return False
+
+
+def _already_batched_line_item_ids() -> 'set[int]':
+    """Returns the set of line_item_ids already locked in an active/funded batch."""
+    rows = (
+        db.session.query(FundingBatchItem.line_item_id)
+        .join(FundingBatch)
+        .filter(
+            FundingBatch.status.in_(_ACTIVE_BATCH_STATUSES),
+            FundingBatchItem.line_item_id.isnot(None),
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _already_batched_bill_ids() -> 'set[int]':
+    """Returns bill_ids entirely covered by active batches (all matched LIs are batched)."""
+    rows = (
+        db.session.query(FundingBatchItem.bill_id)
+        .join(FundingBatch)
+        .filter(FundingBatch.status.in_(_ACTIVE_BATCH_STATUSES))
+        .distinct()
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+# ── Preview endpoint ──────────────────────────────────────────────────────────
+
+@app.route('/api/funding-batches/preview', methods=['POST'])
+@require_role('law_firm', 'admin')
+def preview_funding_batch(session):
+    """
+    Returns eligible completed bills/line items in the given date window,
+    pre-calculated with CPT-specific negotiated rates.
+    The law firm still selects which items to include — nothing is created here.
+    """
+    data = request.get_json(silent=True) or {}
+    provider_id = data.get('provider_id')
+    assigned_funder_id = data.get('assigned_funder_id')
+    batch_start_date = data.get('batch_start_date')
+    batch_end_date = data.get('batch_end_date')
+    filter_case_id = data.get('case_id')
+
+    if not provider_id:
+        return error_response('provider_id is required')
+
+    provider = db.session.get(User, provider_id)
+    if not provider or provider.role != 'provider':
+        return error_response('provider_id must reference a provider user')
+
+    law_firm_id = session['user_id'] if session['role'] == 'law_firm' else (
+        data.get('law_firm_id') or session['user_id']
+    )
+
+    # Build eligible bill query
+    q = (
+        MedicalBill.query
+        .join(PatientCase, MedicalBill.case_id == PatientCase.id)
+        .filter(
+            MedicalBill.status == 'completed',
+            PatientCase.law_firm_id == law_firm_id,
+        )
+    )
+    if filter_case_id:
+        q = q.filter(MedicalBill.case_id == filter_case_id)
+    if batch_start_date:
+        q = q.filter(MedicalBill.created_at >= batch_start_date)
+    if batch_end_date:
+        q = q.filter(MedicalBill.created_at <= batch_end_date + ' 23:59:59')
+
+    bills = q.order_by(MedicalBill.created_at.desc()).all()
+
+    taken_li_ids = _already_batched_line_item_ids()
+
+    result_bills = []
+    for bill in bills:
+        case = db.session.get(PatientCase, bill.case_id)
+        matched = [
+            li for li in bill.line_items
+            if li.match_status == 'matched' and li.medicare_allowed_amount
+        ]
+        if not matched:
+            continue
+
+        bill_items = []
+        for li in matched:
+            mult, rate_obj, used_default, warn = _resolve_cpt_rate(
+                law_firm_id, provider_id, li.code
+            )
+            math = calculate_funding_math(
+                billed_amount=Decimal(str(li.billed_amount)),
+                medicare_allowed_amount=Decimal(str(li.medicare_allowed_amount)),
+                negotiated_cpt_multiplier=mult,
+                cpt_code=li.code,
+                used_default_rate=used_default,
+                warning=warn,
+            )
+            already_batched = li.id in taken_li_ids
+            bill_items.append({
+                'line_item_id': li.id,
+                'cpt_code': li.code,
+                'description': li.description,
+                'quantity': str(li.quantity),
+                'billed_amount': str(math['billed_amount']),
+                'medicare_allowed_amount': str(math['medicare_allowed_amount']),
+                'negotiated_cpt_multiplier': str(math['negotiated_cpt_multiplier']),
+                'provider_negotiated_payout': str(math['provider_negotiated_payout']),
+                'funder_funding_amount': str(math['funder_funding_amount']),
+                'spread_amount': str(math['spread_amount']),
+                'law_firm_spread_amount': str(math['law_firm_spread_amount']),
+                'used_default_rate': used_default,
+                'warning': warn,
+                'already_batched': already_batched,
+                'negotiated_cpt_rate_id': rate_obj.id if rate_obj else None,
+            })
+
+        result_bills.append({
+            'bill_id': bill.id,
+            'case_id': bill.case_id,
+            'patient_name': case.patient_name if case else None,
+            'case_number': case.case_number if case else None,
+            'provider_name': bill.provider_name,
+            'original_filename': bill.original_filename,
+            'uploaded_at': bill.created_at.isoformat(),
+            'line_items': bill_items,
+        })
+
+    return success_response(data={
+        'bills': result_bills,
+        'batch_period_days': 15,
+        'funder_medicare_multiplier': str(FUNDER_MEDICARE_MULTIPLIER),
+        'law_firm_spread_percent': str(LAW_FIRM_SPREAD_PERCENT),
+    })
+
+
+# ── Create batch ──────────────────────────────────────────────────────────────
+
+def _create_batch_impl(session: dict, data: dict, restrict_case_id: 'int | None' = None):
+    """
+    Shared implementation for creating a funding batch.
+    restrict_case_id: when coming from the case-scoped route, validate bills belong to this case.
+    """
+    bill_ids = data.get('bill_ids') or []
+    line_item_ids = data.get('line_item_ids') or []
+    provider_id = data.get('provider_id')
+    assigned_funder_id = data.get('assigned_funder_id')
+    batch_name = (data.get('batch_name') or '').strip() or None
+    batch_start_date = data.get('batch_start_date') or None
+    batch_end_date = data.get('batch_end_date') or None
+    notes = (data.get('notes') or '').strip() or None
+
+    if not bill_ids and not line_item_ids:
+        return error_response('Provide bill_ids or line_item_ids to include in the batch')
+    if not provider_id:
+        return error_response('provider_id is required')
+
+    provider = db.session.get(User, provider_id)
+    if not provider or provider.role != 'provider':
+        return error_response('provider_id must reference a provider user')
+
+    law_firm_id = session['user_id'] if session['role'] == 'law_firm' else (
+        data.get('law_firm_id') or session['user_id']
+    )
+    law_firm = db.session.get(User, law_firm_id)
+    if not law_firm or law_firm.role not in ('law_firm', 'admin'):
+        return error_response('law_firm_id must reference a law firm user')
+
+    if assigned_funder_id:
+        funder = db.session.get(User, assigned_funder_id)
+        if not funder or funder.role != 'funder':
+            return error_response('assigned_funder_id must reference a funder user')
+
+    taken_li_ids = _already_batched_line_item_ids()
+
+    batch = FundingBatch(
+        batch_name=batch_name,
+        law_firm_id=law_firm_id,
+        provider_id=provider_id,
+        case_id=restrict_case_id or data.get('case_id'),
+        created_by_id=session['user_id'],
+        assigned_funder_id=assigned_funder_id,
+        batch_start_date=batch_start_date,
+        batch_end_date=batch_end_date,
+        batch_period_days=int(data.get('batch_period_days', 15)),
+        notes=notes,
+        status='draft',
+    )
+    db.session.add(batch)
+    db.session.flush()
+
+    new_items: list[FundingBatchItem] = []
+
+    for bill_id in bill_ids:
+        bill = db.session.get(MedicalBill, bill_id)
+        if not bill:
+            db.session.rollback()
+            return error_response(f'Bill {bill_id} not found', 404)
+        if restrict_case_id and bill.case_id != restrict_case_id:
+            db.session.rollback()
+            return error_response(f'Bill {bill_id} does not belong to this case', 404)
+        if bill.status != 'completed':
+            db.session.rollback()
+            return error_response(f'Bill {bill_id} has not been fully processed yet')
+        new_items.extend(_build_batch_items_from_bill(bill, batch.id, law_firm_id, provider_id))
+
+    seen_li_ids = {i.line_item_id for i in new_items if i.line_item_id}
+    for li_id in line_item_ids:
+        if li_id in seen_li_ids:
+            continue
+        if li_id in taken_li_ids:
+            db.session.rollback()
+            return error_response(f'Line item {li_id} is already in an active batch')
+        li = db.session.get(BillLineItem, li_id)
+        if not li:
+            db.session.rollback()
+            return error_response(f'Line item {li_id} not found', 404)
+        bill = db.session.get(MedicalBill, li.medical_bill_id)
+        if not bill:
+            db.session.rollback()
+            return error_response(f'Bill for line item {li_id} not found', 404)
+        if restrict_case_id and bill.case_id != restrict_case_id:
+            db.session.rollback()
+            return error_response(f'Line item {li_id} does not belong to this case', 404)
+        if li.match_status != 'matched' or not li.medicare_allowed_amount:
+            db.session.rollback()
+            return error_response(f'Line item {li_id} has no Medicare rate and cannot be batched')
+
+        mult, rate_obj, used_default, warn = _resolve_cpt_rate(law_firm_id, provider_id, li.code)
+        math = calculate_funding_math(
+            billed_amount=Decimal(str(li.billed_amount)),
+            medicare_allowed_amount=Decimal(str(li.medicare_allowed_amount)),
+            negotiated_cpt_multiplier=mult,
+            cpt_code=li.code,
+            used_default_rate=used_default,
+            warning=warn,
+        )
+        new_items.append(FundingBatchItem(
+            funding_batch_id=batch.id,
+            case_id=bill.case_id,
+            bill_id=li.medical_bill_id,
+            line_item_id=li.id,
+            negotiated_cpt_rate_id=rate_obj.id if rate_obj else None,
+            cpt_code=li.code,
+            description=li.description,
+            quantity=li.quantity,
+            billed_amount=math['billed_amount'],
+            medicare_allowed_amount=math['medicare_allowed_amount'],
+            negotiated_cpt_multiplier=math['negotiated_cpt_multiplier'],
+            provider_negotiated_payout=math['provider_negotiated_payout'],
+            funder_medicare_multiplier=math['funder_medicare_multiplier'],
+            funder_funding_amount=math['funder_funding_amount'],
+            spread_amount=math['spread_amount'],
+            law_firm_spread_percent=math['law_firm_spread_percent'],
+            law_firm_spread_amount=math['law_firm_spread_amount'],
+            remaining_spread_amount=math['remaining_spread_amount'],
+            used_default_rate=used_default,
+            warning=warn,
+        ))
+
+    if not new_items:
+        db.session.rollback()
+        return error_response('No fundable items found — bills may have no matched Medicare rates')
+
+    for item in new_items:
+        db.session.add(item)
+
+    db.session.flush()
+    _recalculate_batch_totals(batch)
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True), status_code=201)
+
+
+@app.route('/api/funding-batches', methods=['POST'])
+@require_role('law_firm', 'admin')
+def create_funding_batch_toplevel(session):
+    return _create_batch_impl(session, request.get_json(silent=True) or {})
+
+
+@app.route('/api/cases/<int:case_id>/funding-batches', methods=['POST'])
+@require_role('law_firm', 'admin')
+def create_funding_batch(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if session['role'] == 'law_firm' and case.law_firm_id != session['user_id']:
+        return error_response('Forbidden', 403)
+    data = request.get_json(silent=True) or {}
+    # Inject provider from case assignments if not supplied
+    if not data.get('provider_id'):
+        pa = CaseAssignment.query.filter_by(case_id=case_id, role_on_case='provider').first()
+        if pa:
+            data = dict(data, provider_id=pa.user_id)
+    return _create_batch_impl(session, data, restrict_case_id=case_id)
+
+
+@app.route('/api/cases/<int:case_id>/funding-batches', methods=['GET'])
+@require_auth
+def list_case_funding_batches(case_id, session):
+    case = db.session.get(PatientCase, case_id)
+    if not case:
+        return error_response('Case not found', 404)
+    if not can_user_access_case(session['user_id'], session['role'], case):
+        return error_response('Case not found', 404)
+
+    batches = FundingBatch.query.filter_by(case_id=case_id).order_by(
+        FundingBatch.created_at.desc()
+    ).all()
+    return success_response(data=[b.to_dict() for b in batches])
+
+
+@app.route('/api/funding-batches', methods=['GET'])
+@require_auth
+def list_funding_batches(session):
+    role = session['role']
+    user_id = session['user_id']
+
+    if role == 'admin':
+        batches = FundingBatch.query.order_by(FundingBatch.created_at.desc()).all()
+    elif role == 'law_firm':
+        batches = FundingBatch.query.filter_by(
+            law_firm_id=user_id
+        ).order_by(FundingBatch.created_at.desc()).all()
+    elif role == 'funder':
+        batches = FundingBatch.query.filter_by(
+            assigned_funder_id=user_id
+        ).order_by(FundingBatch.created_at.desc()).all()
+    else:  # provider — batches for their provider_id
+        batches = FundingBatch.query.filter_by(
+            provider_id=user_id
+        ).order_by(FundingBatch.created_at.desc()).all()
+
+    status_filter = request.args.get('status')
+    if status_filter:
+        batches = [b for b in batches if b.status == status_filter]
+
+    return success_response(data=[b.to_dict() for b in batches])
+
+
+@app.route('/api/funding-batches/<int:batch_id>', methods=['GET'])
+@require_auth
+def get_funding_batch(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+
+    data = batch.to_dict(include_items=True)
+    # Include case summary
+    case = db.session.get(PatientCase, batch.case_id)
+    if case:
+        data['case'] = case.to_dict()
+    return success_response(data=data)
+
+
+@app.route('/api/funding-batches/<int:batch_id>', methods=['PATCH'])
+@require_role('law_firm', 'admin')
+def update_funding_batch(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status != 'draft':
+        return error_response('Only draft batches can be edited')
+
+    data = request.get_json(silent=True) or {}
+    if 'notes' in data:
+        batch.notes = (data['notes'] or '').strip() or None
+    if 'assigned_funder_id' in data:
+        fid = data['assigned_funder_id']
+        if fid:
+            funder = db.session.get(User, fid)
+            if not funder or funder.role != 'funder':
+                return error_response('assigned_funder_id must reference a funder user')
+            if not db.session.query(CaseAssignment).filter_by(
+                case_id=batch.case_id, user_id=fid
+            ).first():
+                return error_response('Assigned funder is not assigned to this case')
+        batch.assigned_funder_id = fid
+
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True))
+
+
+@app.route('/api/funding-batches/<int:batch_id>/submit', methods=['POST'])
+@require_role('law_firm', 'admin')
+def submit_funding_batch(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status != 'draft':
+        return error_response(f'Batch is already {batch.status} and cannot be submitted')
+    if not batch.assigned_funder_id:
+        return error_response('Assign a funder before submitting')
+    if not batch.items:
+        return error_response('Batch has no items')
+
+    batch.status = 'submitted'
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(), message='Batch submitted to funder')
+
+
+@app.route('/api/funding-batches/<int:batch_id>/start-review', methods=['POST'])
+@require_role('funder', 'admin')
+def start_batch_review(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status != 'submitted':
+        return error_response(f'Batch must be submitted before review (current: {batch.status})')
+
+    batch.status = 'funder_review'
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(), message='Review started')
+
+
+def _sync_batch_status_from_items(batch: 'FundingBatch') -> None:
+    """Derive batch status from the aggregate of all item statuses."""
+    items = batch.items
+    if not items:
+        return
+    statuses = {i.item_status for i in items}
+    if statuses == {'funded'}:
+        batch.status = 'funded'
+    elif statuses == {'rejected'}:
+        batch.status = 'rejected'
+    elif 'funded' in statuses:
+        batch.status = 'partially_funded'
+    # else leave as funder_review
+
+
+@app.route('/api/funding-batches/<int:batch_id>/fund', methods=['POST'])
+@require_role('funder', 'admin')
+def fund_batch(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status not in ('submitted', 'funder_review', 'partially_funded'):
+        return error_response(f'Batch cannot be funded from status: {batch.status}')
+
+    now = datetime.utcnow()
+    for item in batch.items:
+        if item.item_status == 'pending':
+            item.item_status = 'funded'
+            item.funded_at = now
+            item.funded_by_id = session['user_id']
+    batch.status = 'funded'
+    batch.updated_at = now
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True), message='Batch funded successfully')
+
+
+@app.route('/api/funding-batches/<int:batch_id>/reject', methods=['POST'])
+@require_role('funder', 'admin')
+def reject_batch(batch_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status not in ('submitted', 'funder_review', 'partially_funded'):
+        return error_response(f'Batch cannot be rejected from status: {batch.status}')
+
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip() or 'No reason provided'
+
+    for item in batch.items:
+        if item.item_status == 'pending':
+            item.item_status = 'rejected'
+            item.item_rejection_reason = reason
+    batch.status = 'rejected'
+    batch.rejection_reason = reason
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True), message='Batch rejected')
+
+
+@app.route('/api/funding-batches/<int:batch_id>/items/<int:item_id>/fund', methods=['POST'])
+@require_role('funder', 'admin')
+def fund_batch_item(batch_id, item_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status not in ('submitted', 'funder_review', 'partially_funded'):
+        return error_response('Batch is not open for item-level actions')
+
+    item = FundingBatchItem.query.filter_by(id=item_id, funding_batch_id=batch_id).first()
+    if not item:
+        return error_response('Batch item not found', 404)
+    if item.item_status == 'funded':
+        return error_response('Item already funded')
+
+    item.item_status = 'funded'
+    item.funded_at = datetime.utcnow()
+    item.funded_by_id = session['user_id']
+    item.item_rejection_reason = None
+    item.updated_at = datetime.utcnow()
+
+    # Move batch to funder_review if it was just submitted
+    if batch.status == 'submitted':
+        batch.status = 'funder_review'
+    _sync_batch_status_from_items(batch)
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True), message='Item funded')
+
+
+@app.route('/api/funding-batches/<int:batch_id>/items/<int:item_id>/reject', methods=['POST'])
+@require_role('funder', 'admin')
+def reject_batch_item(batch_id, item_id, session):
+    batch = db.session.get(FundingBatch, batch_id)
+    if not batch or not _can_access_batch(session['user_id'], session['role'], batch):
+        return error_response('Funding batch not found', 404)
+    if batch.status not in ('submitted', 'funder_review', 'partially_funded'):
+        return error_response('Batch is not open for item-level actions')
+
+    item = FundingBatchItem.query.filter_by(id=item_id, funding_batch_id=batch_id).first()
+    if not item:
+        return error_response('Batch item not found', 404)
+    if item.item_status == 'funded':
+        return error_response('Cannot reject an already-funded item')
+
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip() or 'No reason provided'
+
+    item.item_status = 'rejected'
+    item.item_rejection_reason = reason
+    item.updated_at = datetime.utcnow()
+
+    if batch.status == 'submitted':
+        batch.status = 'funder_review'
+    _sync_batch_status_from_items(batch)
+    batch.updated_at = datetime.utcnow()
+    db.session.commit()
+    return success_response(data=batch.to_dict(include_items=True), message='Item rejected')
+
+
+# =============================================================================
 # 11. MEDICARE RATE ROUTES
 # =============================================================================
 
@@ -1320,6 +2403,7 @@ def dashboard_summary(session):
     }
 
     if role == 'law_firm':
+        case_ids = [c.id for c in cases]
         data['bills_awaiting_funder'] = MedicalBill.query.join(PatientCase).filter(
             PatientCase.law_firm_id == user_id,
             MedicalBill.funding_status == 'funding_requested',
@@ -1328,28 +2412,56 @@ def dashboard_summary(session):
         data['ready_for_funding'] = sum(
             1 for c in cases if c.status == 'ready_for_funding'
         )
+        data['draft_batches'] = FundingBatch.query.filter(
+            FundingBatch.case_id.in_(case_ids),
+            FundingBatch.status == 'draft',
+        ).count()
+        data['submitted_batches'] = FundingBatch.query.filter(
+            FundingBatch.case_id.in_(case_ids),
+            FundingBatch.status.in_(['submitted', 'funder_review']),
+        ).count()
+        data['funded_batches'] = FundingBatch.query.filter(
+            FundingBatch.case_id.in_(case_ids),
+            FundingBatch.status == 'funded',
+        ).count()
 
     elif role == 'provider':
+        assigned_case_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
         data['my_bills_count'] = MedicalBill.query.filter_by(
             uploaded_by_id=user_id
         ).count()
         data['bills_pending_review'] = MedicalBill.query.filter_by(
             uploaded_by_id=user_id, status='uploaded'
         ).count()
+        data['batch_count'] = FundingBatch.query.filter(
+            FundingBatch.case_id.in_(assigned_case_ids)
+        ).count()
 
     elif role == 'funder':
+        data['pending_batches'] = FundingBatch.query.filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status.in_(['submitted', 'funder_review']),
+        ).count()
+        data['funded_batches'] = FundingBatch.query.filter(
+            FundingBatch.assigned_funder_id == user_id,
+            FundingBatch.status == 'funded',
+        ).count()
+        data['ready_for_funding'] = sum(
+            1 for c in cases if c.status in ('ready_for_funding', 'funder_review')
+        )
+        # Legacy bill-level metric kept for compatibility
         assigned_ids = db.session.query(CaseAssignment.case_id).filter_by(user_id=user_id)
         data['pending_review'] = MedicalBill.query.filter(
             MedicalBill.case_id.in_(assigned_ids),
             MedicalBill.funding_status.in_(['funding_requested', 'under_review']),
         ).count()
-        data['ready_for_funding'] = sum(
-            1 for c in cases if c.status in ('ready_for_funding', 'funder_review')
-        )
 
     elif role == 'admin':
         data['pending_review'] = MedicalBill.query.filter(
             MedicalBill.funding_status.in_(['funding_requested', 'under_review'])
+        ).count()
+        data['pending_batches'] = FundingBatch.query.filter(
+            FundingBatch.status.in_(['submitted', 'funder_review'])
         ).count()
 
     return success_response(data=data)
@@ -1473,6 +2585,158 @@ def seed_demo():
                 assigned_by_user_id=owner.id,
             ))
 
+    # Negotiated rate agreements (law-firm + provider level)
+    henry    = users['henry@lawfirm.demo']
+    provider1     = users['provider1@demo.com']
+    firm_demo     = users['firm@medbill.demo']
+    provider_demo = users['provider@medbill.demo']
+    alice         = users['alice@funder.demo']
+
+    # CPT-specific negotiated rates for Henry + City General
+    HENRY_CPT_RATES = [
+        ('99213', '1.20', 'Office visit – established patient'),
+        ('99214', '1.30', 'Office visit – moderate complexity'),
+        ('93000', '1.15', 'Electrocardiogram – routine ECG'),
+        ('97110', '1.10', 'Therapeutic exercises'),
+        # 97530 intentionally omitted to demonstrate default fallback in the demo
+    ]
+    for cpt, mult, notes in HENRY_CPT_RATES:
+        if not NegotiatedCptRate.query.filter_by(
+            law_firm_id=henry.id, provider_id=provider1.id, cpt_code=cpt, active=True
+        ).first():
+            db.session.add(NegotiatedCptRate(
+                law_firm_id=henry.id,
+                provider_id=provider1.id,
+                cpt_code=cpt,
+                medicare_anchor_multiplier=Decimal(mult),
+                notes=notes,
+                active=True,
+            ))
+
+    # CPT-specific rates for Smith Legal / Riverside Medical (video demo pair)
+    FIRM_CPT_RATES = [
+        ('99213', '1.25', 'Negotiated office visit'),
+        ('99214', '1.35', 'Negotiated complex visit'),
+        ('93000', '1.20', 'Negotiated ECG'),
+    ]
+    for cpt, mult, notes in FIRM_CPT_RATES:
+        if not NegotiatedCptRate.query.filter_by(
+            law_firm_id=firm_demo.id, provider_id=provider_demo.id, cpt_code=cpt, active=True
+        ).first():
+            db.session.add(NegotiatedCptRate(
+                law_firm_id=firm_demo.id,
+                provider_id=provider_demo.id,
+                cpt_code=cpt,
+                medicare_anchor_multiplier=Decimal(mult),
+                notes=notes,
+                active=True,
+            ))
+
+    db.session.flush()
+
+    # Sample funding batches for DEMO-001 (henry's case — ready_for_funding)
+    demo_case = cases['DEMO-001']
+    existing_batch = FundingBatch.query.filter_by(case_id=demo_case.id).first()
+    if not existing_batch:
+        # Draft batch shell
+        draft = FundingBatch(
+            batch_name='May 2026 Batch — Draft',
+            law_firm_id=henry.id,
+            provider_id=provider1.id,
+            case_id=demo_case.id,
+            created_by_id=henry.id,
+            assigned_funder_id=alice.id,
+            batch_start_date=datetime(2026, 5, 1).date(),
+            batch_end_date=datetime(2026, 5, 15).date(),
+            status='draft',
+            notes='Initial draft — pending review',
+        )
+        db.session.add(draft)
+        db.session.flush()
+        _recalculate_batch_totals(draft)
+
+        # Submitted batch with CPT-specific negotiated rates
+        submitted = FundingBatch(
+            batch_name='Apr 2026 Batch — Submitted',
+            law_firm_id=henry.id,
+            provider_id=provider1.id,
+            case_id=demo_case.id,
+            created_by_id=henry.id,
+            assigned_funder_id=alice.id,
+            batch_start_date=datetime(2026, 4, 1).date(),
+            batch_end_date=datetime(2026, 4, 15).date(),
+            status='submitted',
+            notes='Ready for funder review',
+        )
+        db.session.add(submitted)
+        db.session.flush()
+
+        # Find or create a completed bill on the demo case
+        demo_bill = MedicalBill.query.filter_by(
+            case_id=demo_case.id, status='completed'
+        ).first()
+        if demo_bill is None:
+            demo_bill = MedicalBill(
+                case_id=demo_case.id,
+                uploaded_by_id=henry.id,
+                provider_name='City General Hospital',
+                original_filename='demo_bill.pdf',
+                stored_filename='demo_bill.pdf',
+                file_path='/dev/null',
+                status='completed',
+                funding_status='funding_requested',
+            )
+            db.session.add(demo_bill)
+            db.session.flush()
+
+        # Seed line items — each with its own CPT negotiated rate
+        demo_items = [
+            {'code': '99213', 'desc': 'Office visit, established patient', 'qty': Decimal('1'), 'billed': Decimal('250.00'), 'medicare': Decimal('85.00')},
+            {'code': '99214', 'desc': 'Office visit, moderate complexity',  'qty': Decimal('1'), 'billed': Decimal('380.00'), 'medicare': Decimal('125.00')},
+            {'code': '93000', 'desc': 'Electrocardiogram, routine ECG',     'qty': Decimal('2'), 'billed': Decimal('140.00'), 'medicare': Decimal('18.00')},
+            # 97530 has no negotiated rate → triggers default fallback warning
+            {'code': '97530', 'desc': 'Therapeutic activities',             'qty': Decimal('1'), 'billed': Decimal('95.00'),  'medicare': Decimal('32.00')},
+        ]
+        for item_data in demo_items:
+            cpt = item_data['code']
+            medicare_allowed = item_data['medicare'] * item_data['qty']
+            mult, rate_obj, used_default, warn = _resolve_cpt_rate(
+                henry.id, provider1.id, cpt
+            )
+            math = calculate_funding_math(
+                billed_amount=item_data['billed'],
+                medicare_allowed_amount=medicare_allowed,
+                negotiated_cpt_multiplier=mult,
+                cpt_code=cpt,
+                used_default_rate=used_default,
+                warning=warn,
+            )
+            db.session.add(FundingBatchItem(
+                funding_batch_id=submitted.id,
+                case_id=demo_case.id,
+                bill_id=demo_bill.id,
+                line_item_id=None,
+                negotiated_cpt_rate_id=rate_obj.id if rate_obj else None,
+                cpt_code=cpt,
+                description=item_data['desc'],
+                quantity=item_data['qty'],
+                billed_amount=math['billed_amount'],
+                medicare_allowed_amount=math['medicare_allowed_amount'],
+                negotiated_cpt_multiplier=math['negotiated_cpt_multiplier'],
+                provider_negotiated_payout=math['provider_negotiated_payout'],
+                funder_medicare_multiplier=math['funder_medicare_multiplier'],
+                funder_funding_amount=math['funder_funding_amount'],
+                spread_amount=math['spread_amount'],
+                law_firm_spread_percent=math['law_firm_spread_percent'],
+                law_firm_spread_amount=math['law_firm_spread_amount'],
+                remaining_spread_amount=math['remaining_spread_amount'],
+                used_default_rate=used_default,
+                warning=warn,
+            ))
+
+        db.session.flush()
+        _recalculate_batch_totals(submitted)
+
     db.session.commit()
     return success_response(
         data={
@@ -1481,6 +2745,11 @@ def seed_demo():
                 'provider':  {'email': 'provider@medbill.demo', 'password': 'Demo1234!', 'org': 'Riverside Medical Center'},
                 'funder':    {'email': 'funder@medbill.demo',   'password': 'Demo1234!', 'org': 'MedFund Capital'},
                 'case':      'VIDEO-001 — Maria Gonzalez (active)',
+            },
+            'funding_math': {
+                'funder_medicare_multiplier':         str(FUNDER_MEDICARE_MULTIPLIER),
+                'law_firm_spread_percent':            str(LAW_FIRM_SPREAD_PERCENT),
+                'default_negotiated_rate_multiplier': str(DEFAULT_NEGOTIATED_RATE_MULTIPLIER),
             },
         },
         message='Demo data seeded — password for all: Demo1234!',

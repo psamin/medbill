@@ -14,29 +14,27 @@ interface NavItem {
 
 const NAV_LINKS: Record<string, NavItem[]> = {
   law_firm: [
-    { href: '/dashboard',   label: 'Dashboard' },
-    { href: '/cases',       label: 'Cases' },
-    { href: '/bills',       label: 'Bills' },
-    { href: '/upload',      label: 'Upload Bill' },
-    { href: '/assignments', label: 'Assignments' },
+    { href: '/dashboard',            label: 'Dashboard' },
+    { href: '/cases',                label: 'Cases' },
+    { href: '/funding-batches',      label: 'Funding Batches' },
+    { href: '/negotiated-cpt-rates', label: 'CPT Rates' },
+    { href: '/assignments',          label: 'Assignments' },
   ],
   provider: [
-    { href: '/dashboard',   label: 'Dashboard' },
-    { href: '/cases',       label: 'Assigned Cases' },
-    { href: '/bills',       label: 'Bills' },
-    { href: '/upload',      label: 'Upload Bill' },
+    { href: '/dashboard',       label: 'Dashboard' },
+    { href: '/cases',           label: 'Assigned Cases' },
+    { href: '/funding-batches', label: 'Funding Batches' },
   ],
   funder: [
-    { href: '/dashboard',   label: 'Dashboard' },
-    { href: '/bills',       label: 'Funding Queue' },
-    { href: '/cases',       label: 'Assigned Cases' },
+    { href: '/dashboard',       label: 'Dashboard' },
+    { href: '/funding-batches', label: 'Batch Queue' },
   ],
   admin: [
-    { href: '/dashboard',   label: 'Dashboard' },
-    { href: '/cases',       label: 'Cases' },
-    { href: '/bills',       label: 'Bills' },
-    { href: '/upload',      label: 'Upload Bill' },
-    { href: '/assignments', label: 'Assignments' },
+    { href: '/dashboard',            label: 'Dashboard' },
+    { href: '/cases',                label: 'Cases' },
+    { href: '/funding-batches',      label: 'Funding Batches' },
+    { href: '/negotiated-cpt-rates', label: 'CPT Rates' },
+    { href: '/assignments',          label: 'Assignments' },
   ],
 }
 
