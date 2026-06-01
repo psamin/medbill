@@ -96,10 +96,10 @@ export default function BatchDetailPage({ params }: Props) {
   }
 
   if (loading) return (
-    <AppShell><main className="p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
+    <AppShell><main className="p-4 sm:p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
   )
   if (error || !batch) return (
-    <AppShell><main className="p-8">
+    <AppShell><main className="p-4 sm:p-8">
       <Link href="/funding-batches" className="text-sm text-blue-600 hover:text-blue-700">← Funding Batches</Link>
       <p className="mt-4 text-sm text-red-600">{error || 'Batch not found'}</p>
     </main></AppShell>
@@ -121,14 +121,14 @@ export default function BatchDetailPage({ params }: Props) {
 
   return (
     <AppShell>
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <div className="mb-6">
           <Link href="/funding-batches" className="text-sm text-blue-600 hover:text-blue-700">← Funding Batches</Link>
         </div>
 
         {/* Header card */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <div className="flex items-start justify-between gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="text-xl font-bold text-gray-900">
@@ -255,34 +255,34 @@ export default function BatchDetailPage({ params }: Props) {
               <div className="p-8 text-center text-sm text-gray-400">No items in this batch.</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs">
+                <table className="w-full min-w-[480px] text-xs">
                   <thead>
                     <tr className="bg-gray-50 border-b border-gray-100">
-                      <th className="text-left px-4 py-2.5 font-medium text-gray-500">CPT</th>
-                      <th className="text-left px-4 py-2.5 font-medium text-gray-500">Description</th>
-                      <th className="text-right px-4 py-2.5 font-medium text-gray-500">Rate</th>
-                      <th className="text-right px-4 py-2.5 font-medium text-gray-500">Medicare</th>
-                      <th className="text-right px-4 py-2.5 font-medium text-gray-500">Provider Payout</th>
-                      {showFunderAmount && <th className="text-right px-4 py-2.5 font-medium text-gray-500">Funder Funds</th>}
-                      {showLfSpread && <th className="text-right px-4 py-2.5 font-medium text-gray-500">LF Spread</th>}
-                      {canItemAction && <th className="px-4 py-2.5 font-medium text-gray-500">Status</th>}
+                      <th className="text-left px-3 sm:px-4 py-2.5 font-medium text-gray-500">CPT</th>
+                      <th className="text-left px-3 sm:px-4 py-2.5 font-medium text-gray-500 hidden sm:table-cell">Description</th>
+                      <th className="text-right px-3 sm:px-4 py-2.5 font-medium text-gray-500 hidden sm:table-cell">Rate</th>
+                      <th className="text-right px-3 sm:px-4 py-2.5 font-medium text-gray-500">Medicare</th>
+                      <th className="text-right px-3 sm:px-4 py-2.5 font-medium text-gray-500">Payout</th>
+                      {showFunderAmount && <th className="text-right px-3 sm:px-4 py-2.5 font-medium text-gray-500 hidden sm:table-cell">Funder</th>}
+                      {showLfSpread && <th className="text-right px-3 sm:px-4 py-2.5 font-medium text-gray-500 hidden md:table-cell">LF Spread</th>}
+                      {canItemAction && <th className="px-3 sm:px-4 py-2.5 font-medium text-gray-500">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {batch.items.map(item => (
                       <tr key={item.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
-                        <td className="px-4 py-2.5 font-mono text-gray-700">
+                        <td className="px-3 sm:px-4 py-2.5 font-mono text-gray-700">
                           {item.cpt_code ?? '—'}
                           {item.used_default_rate && <span className="ml-1 text-amber-500" title={item.warning ?? ''}>⚠</span>}
                         </td>
-                        <td className="px-4 py-2.5 text-gray-600 max-w-[140px] truncate" title={item.description ?? ''}>{item.description ?? '—'}</td>
-                        <td className="px-4 py-2.5 text-right text-blue-700">{(parseFloat(item.negotiated_cpt_multiplier) * 100).toFixed(0)}%</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.medicare_allowed_amount)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.provider_negotiated_payout)}</td>
-                        {showFunderAmount && <td className="px-4 py-2.5 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(item.funder_funding_amount)}</td>}
-                        {showLfSpread && <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{formatCurrency(item.law_firm_spread_amount)}</td>}
+                        <td className="px-3 sm:px-4 py-2.5 text-gray-600 max-w-[120px] truncate hidden sm:table-cell" title={item.description ?? ''}>{item.description ?? '—'}</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-right text-blue-700 hidden sm:table-cell">{(parseFloat(item.negotiated_cpt_multiplier) * 100).toFixed(0)}%</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.medicare_allowed_amount)}</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums">{formatCurrency(item.provider_negotiated_payout)}</td>
+                        {showFunderAmount && <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums text-blue-700 font-medium hidden sm:table-cell">{formatCurrency(item.funder_funding_amount)}</td>}
+                        {showLfSpread && <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums text-green-700 hidden md:table-cell">{formatCurrency(item.law_firm_spread_amount)}</td>}
                         {canItemAction && (
-                          <td className="px-4 py-2.5">
+                          <td className="px-3 sm:px-4 py-2.5">
                             {item.item_status !== 'pending' ? (
                               <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ITEM_STATUS_COLORS[item.item_status]}`}>
                                 {item.item_status === 'funded' ? '✓ Funded' : '✕ Rejected'}
@@ -292,13 +292,13 @@ export default function BatchDetailPage({ params }: Props) {
                                 <input
                                   type="text" value={itemRejectReason} onChange={e => setItemRejectReason(e.target.value)}
                                   placeholder="Reason…" autoFocus
-                                  className="px-2 py-1 border border-red-300 rounded text-xs bg-white focus:outline-none focus:ring-1 focus:ring-red-400 w-32"
+                                  className="px-2 py-1 border border-red-300 rounded text-xs bg-white focus:outline-none focus:ring-1 focus:ring-red-400 w-28"
                                 />
                                 <div className="flex gap-1">
                                   <button onClick={() => runItemAction(item.id, 'reject', itemRejectReason || undefined)} disabled={actionLoading}
-                                    className="px-2 py-0.5 bg-red-600 text-white rounded text-xs hover:bg-red-700 disabled:opacity-50">Reject</button>
+                                    className="px-2 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700 disabled:opacity-50">Reject</button>
                                   <button onClick={() => { setRejectingItemId(null); setItemRejectReason('') }}
-                                    className="px-2 py-0.5 text-gray-500 hover:text-gray-800 text-xs">Cancel</button>
+                                    className="px-2 py-1 text-gray-500 hover:text-gray-800 text-xs">Cancel</button>
                                 </div>
                               </div>
                             ) : (
@@ -312,7 +312,7 @@ export default function BatchDetailPage({ params }: Props) {
                           </td>
                         )}
                         {!canItemAction && item.item_status !== 'pending' && (
-                          <td className="px-4 py-2.5">
+                          <td className="px-3 sm:px-4 py-2.5">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ITEM_STATUS_COLORS[item.item_status]}`}>
                               {item.item_status === 'funded' ? '✓ Funded' : '✕ Rejected'}
                             </span>
@@ -323,11 +323,12 @@ export default function BatchDetailPage({ params }: Props) {
                   </tbody>
                   <tfoot>
                     <tr className="bg-gray-50 border-t border-gray-200 font-semibold text-xs">
-                      <td className="px-4 py-2.5 text-gray-700" colSpan={3}>Totals</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
-                      {showFunderAmount && <td className="px-4 py-2.5 text-right tabular-nums text-blue-700">{formatCurrency(batch.total_funder_funding_amount)}</td>}
-                      {showLfSpread && <td className="px-4 py-2.5 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
+                      <td className="px-3 sm:px-4 py-2.5 text-gray-700" colSpan={2}>Totals</td>
+                      <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums hidden sm:table-cell" />
+                      <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
+                      <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
+                      {showFunderAmount && <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums text-blue-700 hidden sm:table-cell">{formatCurrency(batch.total_funder_funding_amount)}</td>}
+                      {showLfSpread && <td className="px-3 sm:px-4 py-2.5 text-right tabular-nums text-green-700 hidden md:table-cell">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
                       {(canItemAction || batch.items.some(i => i.item_status !== 'pending')) && <td />}
                     </tr>
                   </tfoot>

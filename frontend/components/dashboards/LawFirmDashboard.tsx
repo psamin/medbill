@@ -40,28 +40,26 @@ export default function LawFirmDashboard({ user }: Props) {
   }, [])
 
   return (
-    <main className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Case Dashboard</h1>
+    <main className="p-4 sm:p-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Case Dashboard</h1>
         <p className="mt-1 text-sm text-gray-500">Welcome back, {user.organization_name || user.email}</p>
       </div>
 
       {/* Alert: batches pending */}
       {summary && (summary.submitted_batches ?? 0) > 0 && (
-        <div className="mb-4 rounded-xl border bg-blue-50 border-blue-200 p-4 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-blue-800">
-              {summary.submitted_batches} batch{summary.submitted_batches !== 1 ? 'es' : ''} submitted — awaiting funder
-            </p>
-          </div>
-          <Link href="/funding-batches" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+        <div className="mb-4 rounded-xl border bg-blue-50 border-blue-200 p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+          <p className="text-sm font-semibold text-blue-800">
+            {summary.submitted_batches} batch{summary.submitted_batches !== 1 ? 'es' : ''} submitted — awaiting funder
+          </p>
+          <Link href="/funding-batches" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 text-center">
             View Batches →
           </Link>
         </div>
       )}
 
       {/* Metrics */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
         <MetricCard label="Active Cases"    value={summary ? String((summary.total_cases ?? 0) - (summary.closed_cases ?? 0)) : '—'} />
         <MetricCard label="Bills Uploaded"  value={summary ? String(summary.bills_uploaded ?? 0) : '—'} />
         <MetricCard label="Active Batches"  value={summary ? String((summary.draft_batches ?? 0) + (summary.submitted_batches ?? 0)) : '—'} />
@@ -70,9 +68,9 @@ export default function LawFirmDashboard({ user }: Props) {
 
       {/* Financial breakdown — law firm earnings */}
       {summary && parseFloat(summary.total_funder_funding ?? '0') > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 mb-6">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">Funding Economics</h2>
-          <div className="grid grid-cols-3 gap-4 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 text-sm">
             <div>
               <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Funder Funding Amount</p>
               <p className="text-xl font-semibold text-blue-700 tabular-nums">{formatCurrency(summary.total_funder_funding)}</p>
@@ -91,7 +89,7 @@ export default function LawFirmDashboard({ user }: Props) {
 
       {/* Cases table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900">Recent Cases</h2>
           <Link href="/cases" className="text-xs text-blue-600 hover:text-blue-700">View all →</Link>
         </div>
@@ -101,7 +99,8 @@ export default function LawFirmDashboard({ user }: Props) {
             <Link href="/cases" className="mt-2 inline-block text-sm text-blue-600 hover:text-blue-700">Create your first case →</Link>
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
                 <th className="text-left px-5 py-3 font-medium text-gray-500">Case #</th>
@@ -129,10 +128,11 @@ export default function LawFirmDashboard({ user }: Props) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
-      <div className="flex gap-4">
+      <div className="flex flex-wrap gap-4">
         <Link href="/cases"               className="text-sm text-blue-600 hover:text-blue-700 font-medium">All cases →</Link>
         <Link href="/funding-batches"     className="text-sm text-blue-600 hover:text-blue-700 font-medium">Funding batches →</Link>
         <Link href="/negotiated-cpt-rates" className="text-sm text-blue-600 hover:text-blue-700 font-medium">CPT rates →</Link>

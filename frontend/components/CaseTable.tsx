@@ -30,18 +30,19 @@ export default function CaseTable({ cases, userRole }: CaseTableProps) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[520px] text-sm">
         <thead>
           <tr className="border-b border-gray-200 bg-gray-50">
-            <th className="text-left px-5 py-3 font-medium text-gray-500">Case #</th>
-            <th className="text-left px-5 py-3 font-medium text-gray-500">Patient</th>
-            <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500">Total Billed</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
+            <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Case #</th>
+            <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Patient</th>
+            <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+            <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Total Billed</th>
+            <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Medicare</th>
             {(userRole === 'law_firm' || userRole === 'admin') && (
-              <th className="text-right px-5 py-3 font-medium text-gray-500">Case Savings</th>
+              <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Savings</th>
             )}
-            <th className="text-left px-5 py-3 font-medium text-gray-500">Created</th>
+            <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Created</th>
           </tr>
         </thead>
         <tbody>
@@ -51,19 +52,20 @@ export default function CaseTable({ cases, userRole }: CaseTableProps) {
               className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
               onClick={() => router.push(`/cases/${c.id}`)}
             >
-              <td className="px-5 py-3 font-medium text-blue-700">{c.case_number}</td>
-              <td className="px-5 py-3 text-gray-900">{c.patient_name}</td>
-              <td className="px-5 py-3"><StatusBadge status={c.status} /></td>
-              <td className="px-5 py-3 text-right tabular-nums text-gray-900">{formatCurrency(c.total_billed_amount)}</td>
-              <td className="px-5 py-3 text-right tabular-nums text-gray-900">{formatCurrency(c.total_medicare_amount)}</td>
+              <td className="px-4 sm:px-5 py-3.5 font-medium text-blue-700">{c.case_number}</td>
+              <td className="px-4 sm:px-5 py-3.5 text-gray-900">{c.patient_name}</td>
+              <td className="px-4 sm:px-5 py-3.5"><StatusBadge status={c.status} /></td>
+              <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-gray-900 hidden sm:table-cell">{formatCurrency(c.total_billed_amount)}</td>
+              <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-gray-900 hidden sm:table-cell">{formatCurrency(c.total_medicare_amount)}</td>
               {(userRole === 'law_firm' || userRole === 'admin') && (
-                <td className="px-5 py-3 text-right tabular-nums text-green-700">{formatCurrency(c.total_savings)}</td>
+                <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-green-700 hidden sm:table-cell">{formatCurrency(c.total_savings)}</td>
               )}
-              <td className="px-5 py-3 text-gray-400 text-xs">{formatDate(c.created_at)}</td>
+              <td className="px-4 sm:px-5 py-3.5 text-gray-400 text-xs hidden md:table-cell">{formatDate(c.created_at)}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }

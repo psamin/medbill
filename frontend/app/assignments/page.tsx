@@ -91,9 +91,9 @@ export default function AssignmentsPage() {
 
   return (
     <AppShell>
-      <main className="p-8">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Assignments</h1>
+      <main className="p-4 sm:p-8">
+        <div className="mb-6 sm:mb-8">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Assignments</h1>
           <p className="mt-1 text-sm text-gray-500">Assign providers and funders to your cases</p>
         </div>
 
@@ -104,14 +104,14 @@ export default function AssignmentsPage() {
             <p className="text-sm text-gray-400">No cases yet. Create a case first before assigning providers or funders.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Case list */}
-            <div className="col-span-1">
+            <div className="md:col-span-1">
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100">
                   <p className="text-sm font-semibold text-gray-900">Select Case</p>
                 </div>
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-gray-100 max-h-64 md:max-h-none overflow-y-auto">
                   {cases.map(c => (
                     <button key={c.id} onClick={() => setSelectedCaseId(c.id)}
                       className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${
@@ -129,9 +129,9 @@ export default function AssignmentsPage() {
             </div>
 
             {/* Assignments panel */}
-            <div className="col-span-2 space-y-4">
+            <div className="md:col-span-2 space-y-4">
               {selectedCase && (
-                <div className="bg-white rounded-xl border border-gray-200 p-5">
+                <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5">
                   <h2 className="text-base font-semibold text-gray-900 mb-1">
                     {selectedCase.case_number} — {selectedCase.patient_name}
                   </h2>
@@ -145,7 +145,7 @@ export default function AssignmentsPage() {
                     ) : (
                       <div className="space-y-2">
                         {assignments.map(a => (
-                          <div key={a.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2">
+                          <div key={a.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2.5">
                             <div>
                               <span className="text-sm font-medium text-gray-900">
                                 {a.user_org || a.user_email}
@@ -159,7 +159,7 @@ export default function AssignmentsPage() {
                               </span>
                             </div>
                             <button onClick={() => handleRemove(a.id)}
-                              className="text-xs text-red-500 hover:text-red-700 transition-colors">
+                              className="text-xs text-red-500 hover:text-red-700 transition-colors py-1 px-1">
                               Remove
                             </button>
                           </div>
@@ -171,7 +171,7 @@ export default function AssignmentsPage() {
                   {/* Add assignment form */}
                   <form onSubmit={handleAssign} className="mt-5 pt-4 border-t border-gray-100">
                     <p className="text-sm font-medium text-gray-700 mb-3">Add Assignment</p>
-                    <div className="flex gap-3">
+                    <div className="flex flex-col sm:flex-row gap-3">
                       <select value={roleFilter} onChange={e => { setRoleFilter(e.target.value as 'provider' | 'funder'); setSelectedUserId('') }}
                         className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <option value="provider">Provider</option>

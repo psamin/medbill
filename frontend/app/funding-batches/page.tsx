@@ -56,7 +56,7 @@ export default function FundingBatchesPage() {
 
   return (
     <AppShell>
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">
             {isFunder ? 'Batch Queue' : 'Funding Batches'}
@@ -106,22 +106,23 @@ export default function FundingBatchesPage() {
           </div>
         ) : (
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100 text-left">
-                  <th className="px-5 py-3 font-medium text-gray-500">Batch</th>
-                  <th className="px-5 py-3 font-medium text-gray-500">Status</th>
-                  <th className="px-5 py-3 font-medium text-gray-500">Provider</th>
-                  {!isFunder && <th className="px-5 py-3 font-medium text-gray-500">Funder</th>}
-                  <th className="px-5 py-3 font-medium text-gray-500 text-right">Medicare Benchmark</th>
+                  <th className="px-4 sm:px-5 py-3 font-medium text-gray-500">Batch</th>
+                  <th className="px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+                  <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Provider</th>
+                  {!isFunder && <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Funder</th>}
+                  <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 text-right hidden sm:table-cell">Medicare</th>
                   {showFunderAmount
-                    ? <th className="px-5 py-3 font-medium text-gray-500 text-right">Funder Funding</th>
-                    : <th className="px-5 py-3 font-medium text-gray-500 text-right">Provider Payout</th>
+                    ? <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 text-right">Funding</th>
+                    : <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 text-right">Payout</th>
                   }
                   {isLawFirm && (
-                    <th className="px-5 py-3 font-medium text-gray-500 text-right">LF Spread</th>
+                    <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 text-right hidden sm:table-cell">LF Spread</th>
                   )}
-                  <th className="px-5 py-3 font-medium text-gray-500">Created</th>
+                  <th className="px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Created</th>
                 </tr>
               </thead>
               <tbody>
@@ -131,32 +132,33 @@ export default function FundingBatchesPage() {
                     className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                     onClick={() => router.push(`/funding-batches/${batch.id}`)}
                   >
-                    <td className="px-5 py-3">
+                    <td className="px-4 sm:px-5 py-3.5">
                       <span className="font-medium text-blue-700">
                         {batch.batch_name || `Batch #${batch.id}`}
                       </span>
-                      <span className="ml-2 text-xs text-gray-400">{batch.item_count} items</span>
+                      <span className="ml-1.5 text-xs text-gray-400">{batch.item_count} items</span>
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 sm:px-5 py-3.5">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[batch.status] ?? STATUS_COLORS.draft}`}>
                         {STATUS_LABELS[batch.status] ?? batch.status}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-gray-600 text-sm">{batch.provider_org ?? '—'}</td>
-                    {!isFunder && <td className="px-5 py-3 text-gray-600 text-sm">{batch.assigned_funder_org ?? <span className="italic text-gray-400">Unassigned</span>}</td>}
-                    <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
+                    <td className="px-4 sm:px-5 py-3.5 text-gray-600 text-sm hidden sm:table-cell">{batch.provider_org ?? '—'}</td>
+                    {!isFunder && <td className="px-4 sm:px-5 py-3.5 text-gray-600 text-sm hidden sm:table-cell">{batch.assigned_funder_org ?? <span className="italic text-gray-400">Unassigned</span>}</td>}
+                    <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums hidden sm:table-cell">{formatCurrency(batch.total_medicare_amount)}</td>
                     {showFunderAmount
-                      ? <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
-                      : <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
+                      ? <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                      : <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
                     }
                     {isLawFirm && (
-                      <td className="px-5 py-3 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>
+                      <td className="px-4 sm:px-5 py-3.5 text-right tabular-nums text-green-700 hidden sm:table-cell">{formatCurrency(batch.total_law_firm_spread_amount)}</td>
                     )}
-                    <td className="px-5 py-3 text-gray-400 text-xs">{formatDate(batch.created_at)}</td>
+                    <td className="px-4 sm:px-5 py-3.5 text-gray-400 text-xs hidden md:table-cell">{formatDate(batch.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </main>

@@ -64,7 +64,7 @@ export default function CasesPage() {
 
   return (
     <AppShell>
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
@@ -87,7 +87,7 @@ export default function CasesPage() {
         {showForm && (
           <form onSubmit={handleCreate} className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
             <h2 className="text-base font-semibold text-gray-900 mb-4">New Patient Case</h2>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Patient Name</label>
                 <input type="text" value={patientName} onChange={e => setPatientName(e.target.value)} required

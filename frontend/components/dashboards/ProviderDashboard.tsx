@@ -46,13 +46,13 @@ export default function ProviderDashboard({ user }: Props) {
   }, [])
 
   return (
-    <main className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Provider Dashboard</h1>
+    <main className="p-4 sm:p-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Provider Dashboard</h1>
         <p className="mt-1 text-sm text-gray-500">Welcome back, {user.organization_name || user.email}</p>
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
         <MetricCard label="Assigned Cases"       value={summary ? String(summary.total_cases) : '—'} />
         <MetricCard label="Bills Uploaded"       value={summary ? String(summary.my_bills_count ?? 0) : '—'} />
         <MetricCard label="Pending Payment"      value={summary ? String(summary.pending_batches ?? 0) : '—'} />
@@ -61,7 +61,7 @@ export default function ProviderDashboard({ user }: Props) {
 
       {/* Assigned cases */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900">Assigned Cases</h2>
           <Link href="/cases" className="text-xs text-blue-600 hover:text-blue-700">View all →</Link>
         </div>
@@ -70,14 +70,15 @@ export default function ProviderDashboard({ user }: Props) {
             <p className="text-sm text-gray-400">No cases assigned yet. Your law firm will assign cases when bills are ready.</p>
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[480px] text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Case #</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Patient</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Created</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Case #</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Patient</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Medicare</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Created</th>
               </tr>
             </thead>
             <tbody>
@@ -85,32 +86,34 @@ export default function ProviderDashboard({ user }: Props) {
                 <tr key={c.id}
                   className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                   onClick={() => router.push(`/cases/${c.id}`)}>
-                  <td className="px-5 py-3 font-medium text-blue-700">{c.case_number}</td>
-                  <td className="px-5 py-3 text-gray-900">{c.patient_name}</td>
-                  <td className="px-5 py-3"><StatusBadge status={c.status} /></td>
-                  <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(c.total_medicare_amount)}</td>
-                  <td className="px-5 py-3 text-xs text-gray-400">{formatDate(c.created_at)}</td>
+                  <td className="px-4 sm:px-5 py-3 font-medium text-blue-700">{c.case_number}</td>
+                  <td className="px-4 sm:px-5 py-3 text-gray-900">{c.patient_name}</td>
+                  <td className="px-4 sm:px-5 py-3"><StatusBadge status={c.status} /></td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums">{formatCurrency(c.total_medicare_amount)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden sm:table-cell">{formatDate(c.created_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
       {/* Funding batches — no LF spread shown */}
       {batches.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-900">Funding Batches</h2>
             <Link href="/funding-batches" className="text-xs text-blue-600 hover:text-blue-700">View all →</Link>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[400px] text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Provider Payout</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Batch</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Medicare</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Payout</th>
               </tr>
             </thead>
             <tbody>
@@ -118,18 +121,19 @@ export default function ProviderDashboard({ user }: Props) {
                 <tr key={b.id}
                   className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                   onClick={() => router.push(`/funding-batches/${b.id}`)}>
-                  <td className="px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 sm:px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
+                  <td className="px-4 sm:px-5 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${BATCH_STATUS_COLORS[b.status] ?? 'bg-gray-100 text-gray-600'}`}>
                       {BATCH_STATUS_LABELS[b.status] ?? b.status}
                     </span>
                   </td>
-                  <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(b.total_medicare_amount)}</td>
-                  <td className="px-5 py-3 text-right tabular-nums text-gray-700">{formatCurrency(b.total_provider_negotiated_payout)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums hidden sm:table-cell">{formatCurrency(b.total_medicare_amount)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-gray-700">{formatCurrency(b.total_provider_negotiated_payout)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </main>

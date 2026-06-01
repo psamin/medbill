@@ -50,14 +50,14 @@ export default function FunderDashboard({ user }: Props) {
   )
 
   return (
-    <main className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Funding Dashboard</h1>
+    <main className="p-4 sm:p-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Funding Dashboard</h1>
         <p className="mt-1 text-sm text-gray-500">Welcome back, {user.organization_name || user.email}</p>
       </div>
 
       {/* Pending batch alert */}
-      <div className={`mb-6 rounded-xl border p-5 flex items-center justify-between ${
+      <div className={`mb-6 rounded-xl border p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between ${
         pendingCount > 0 ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'
       }`}>
         <div>
@@ -71,13 +71,13 @@ export default function FunderDashboard({ user }: Props) {
           </p>
         </div>
         {pendingCount > 0 && (
-          <Link href="/funding-batches" className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 whitespace-nowrap">
+          <Link href="/funding-batches" className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 text-center">
             Review Queue →
           </Link>
         )}
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
         <MetricCard label="Assigned Cases"    value={summary ? String(summary.total_cases) : '—'} />
         <MetricCard label="Pending Batches"   value={String(pendingCount)} />
         <MetricCard label="Funding Exposure"  value={`$${totalFundingExposure.toLocaleString('en-US', { minimumFractionDigits: 2 })}`} />
@@ -87,19 +87,20 @@ export default function FunderDashboard({ user }: Props) {
       {/* Pending batch queue */}
       {pendingBatches.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div className="px-4 sm:px-5 py-4 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-900">Pending Review Queue</h2>
             <Link href="/funding-batches" className="text-xs text-blue-600 hover:text-blue-700">View all →</Link>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Provider</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Funder Funding Amount</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Submitted</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Batch</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Status</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Provider</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Medicare</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Funding Amount</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Submitted</th>
               </tr>
             </thead>
             <tbody>
@@ -107,36 +108,38 @@ export default function FunderDashboard({ user }: Props) {
                 <tr key={b.id}
                   className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                   onClick={() => router.push(`/funding-batches/${b.id}`)}>
-                  <td className="px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 sm:px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
+                  <td className="px-4 sm:px-5 py-3 hidden sm:table-cell">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[b.status] ?? 'bg-gray-100 text-gray-500'}`}>
                       {STATUS_LABELS[b.status] ?? b.status}
                     </span>
                   </td>
-                  <td className="px-5 py-3 text-gray-600">{b.provider_org ?? '—'}</td>
-                  <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(b.total_medicare_amount)}</td>
-                  <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(b.total_funder_funding_amount)}</td>
-                  <td className="px-5 py-3 text-xs text-gray-400">{formatDate(b.updated_at)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-gray-600 hidden sm:table-cell">{b.provider_org ?? '—'}</td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums hidden sm:table-cell">{formatCurrency(b.total_medicare_amount)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(b.total_funder_funding_amount)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden sm:table-cell">{formatDate(b.updated_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {/* Funded batches summary */}
       {fundedBatches.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100">
+          <div className="px-4 sm:px-5 py-4 border-b border-gray-100">
             <h2 className="text-sm font-semibold text-gray-900">Funded Batches</h2>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[400px] text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Provider</th>
-                <th className="text-right px-5 py-3 font-medium text-gray-500">Funded Amount</th>
-                <th className="text-left px-5 py-3 font-medium text-gray-500">Date</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Batch</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Provider</th>
+                <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Funded Amount</th>
+                <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Date</th>
               </tr>
             </thead>
             <tbody>
@@ -144,14 +147,15 @@ export default function FunderDashboard({ user }: Props) {
                 <tr key={b.id}
                   className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                   onClick={() => router.push(`/funding-batches/${b.id}`)}>
-                  <td className="px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
-                  <td className="px-5 py-3 text-gray-600">{b.provider_org ?? '—'}</td>
-                  <td className="px-5 py-3 text-right tabular-nums text-green-700 font-medium">{formatCurrency(b.total_funder_funding_amount)}</td>
-                  <td className="px-5 py-3 text-xs text-gray-400">{formatDate(b.updated_at)}</td>
+                  <td className="px-4 sm:px-5 py-3 font-medium text-blue-700">{b.batch_name || `#${b.id}`}</td>
+                  <td className="px-4 sm:px-5 py-3 text-gray-600 hidden sm:table-cell">{b.provider_org ?? '—'}</td>
+                  <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-green-700 font-medium">{formatCurrency(b.total_funder_funding_amount)}</td>
+                  <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden sm:table-cell">{formatDate(b.updated_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </main>

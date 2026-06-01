@@ -185,9 +185,9 @@ export default function CaseDetailPage({ params }: Props) {
     } finally { setBatchLoading(false) }
   }
 
-  if (loading) return <AppShell><main className="p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
+  if (loading) return <AppShell><main className="p-4 sm:p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
   if (error || !caseData) return (
-    <AppShell><main className="p-8">
+    <AppShell><main className="p-4 sm:p-8">
       <Link href="/cases" className="text-sm text-blue-600 hover:text-blue-700">← Cases</Link>
       <p className="mt-4 text-sm text-red-600 bg-red-50 border border-red-200 px-4 py-3 rounded-lg">{error || 'Case not found'}</p>
     </main></AppShell>
@@ -202,17 +202,17 @@ export default function CaseDetailPage({ params }: Props) {
 
   return (
     <AppShell>
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <div className="mb-4">
           <Link href="/cases" className="text-sm text-blue-600 hover:text-blue-700">← Cases</Link>
         </div>
 
         {/* Case header */}
-        <div className="bg-white rounded-xl border border-gray-200 px-6 pt-6 pb-0 mb-6">
-          <div className="flex items-start justify-between mb-4">
-            <div>
+        <div className="bg-white rounded-xl border border-gray-200 px-4 sm:px-6 pt-5 sm:pt-6 pb-0 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
+            <div className="min-w-0">
               <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="text-2xl font-bold text-gray-900">{caseData.patient_name}</h1>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900">{caseData.patient_name}</h1>
                 <StatusBadge status={caseData.status} />
               </div>
               <p className="mt-1 text-sm text-gray-500">Case #{caseData.case_number} · Created {formatDate(caseData.created_at)}</p>
@@ -225,7 +225,7 @@ export default function CaseDetailPage({ params }: Props) {
                 )}
               </div>
             </div>
-            <div className="flex gap-2 shrink-0">
+            <div className="flex flex-wrap gap-2 shrink-0">
               {canManage && (
                 <Link href="/negotiated-cpt-rates" className="border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-50">
                   CPT Rates
@@ -252,11 +252,11 @@ export default function CaseDetailPage({ params }: Props) {
             </div>
           </div>
 
-          {/* Tab nav */}
-          <div className="flex gap-0 -mb-px">
+          {/* Tab nav — scrollable on small screens */}
+          <div className="flex gap-0 -mb-px overflow-x-auto scrollbar-none">
             {TABS.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                   tab === t.id
                     ? 'border-blue-600 text-blue-700'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -269,7 +269,7 @@ export default function CaseDetailPage({ params }: Props) {
 
         {/* Closed case banner */}
         {isClosed && (
-          <div className="bg-gray-50 border border-gray-200 rounded-xl px-5 py-3 flex items-center justify-between">
+          <div className="bg-gray-50 border border-gray-200 rounded-xl px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
               <span className="text-sm font-medium text-gray-700">This case is closed.</span>
               <span className="ml-2 text-sm text-gray-500">
@@ -321,7 +321,7 @@ export default function CaseDetailPage({ params }: Props) {
         {tab === 'overview' && (
           <div className="space-y-6">
             {/* Totals */}
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
               <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Total Billed</p>
                 <p className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{formatCurrency(caseData.total_billed_amount)}</p>
@@ -373,7 +373,7 @@ export default function CaseDetailPage({ params }: Props) {
                   <h2 className="text-sm font-semibold text-gray-900">Recent Bills</h2>
                   <button onClick={() => setTab('bills')} className="text-xs text-blue-600 hover:text-blue-700">View all →</button>
                 </div>
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-sm">
                   <tbody>
                     {caseData.bills.slice(0, 3).map(bill => (
                       <tr key={bill.id}
@@ -385,7 +385,7 @@ export default function CaseDetailPage({ params }: Props) {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             )}
           </div>
@@ -413,16 +413,16 @@ export default function CaseDetailPage({ params }: Props) {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto"><table className="w-full min-w-[420px] text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b border-gray-100">
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Provider / File</th>
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Funding</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Billed</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Allowed</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Items</th>
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Uploaded</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Provider / File</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Funding</th>
+                      <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Billed</th>
+                      <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Medicare</th>
+                      <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Items</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Uploaded</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -430,24 +430,25 @@ export default function CaseDetailPage({ params }: Props) {
                       <tr key={bill.id}
                         className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                         onClick={() => router.push(`/bills/${bill.id}`)}>
-                        <td className="px-5 py-3">
+                        <td className="px-4 sm:px-5 py-3">
                           <p className="font-medium text-blue-700">{bill.display_name || bill.provider_name || bill.original_filename}</p>
                           {(bill.display_name || bill.provider_name) && <p className="text-xs text-gray-400">{bill.original_filename}</p>}
                         </td>
-                        <td className="px-5 py-3"><StatusBadge status={bill.status} /></td>
-                        <td className="px-5 py-3">
+                        <td className="px-4 sm:px-5 py-3"><StatusBadge status={bill.status} /></td>
+                        <td className="px-4 sm:px-5 py-3 hidden sm:table-cell">
                           {bill.funding_status !== 'not_requested' && (
                             <StatusBadge status={bill.funding_status} />
                           )}
                         </td>
-                        <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(bill.total_billed_amount)}</td>
-                        <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(bill.total_medicare_amount)}</td>
-                        <td className="px-5 py-3 text-right text-gray-500">{bill.matched_line_item_count}/{bill.line_item_count}</td>
-                        <td className="px-5 py-3 text-xs text-gray-400">{formatDate(bill.created_at)}</td>
+                        <td className="px-4 sm:px-5 py-3 text-right tabular-nums">{formatCurrency(bill.total_billed_amount)}</td>
+                        <td className="px-4 sm:px-5 py-3 text-right tabular-nums hidden sm:table-cell">{formatCurrency(bill.total_medicare_amount)}</td>
+                        <td className="px-4 sm:px-5 py-3 text-right text-gray-500 hidden md:table-cell">{bill.matched_line_item_count}/{bill.line_item_count}</td>
+                        <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden md:table-cell">{formatDate(bill.created_at)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
           </div>
@@ -479,7 +480,7 @@ export default function CaseDetailPage({ params }: Props) {
 
             <form onSubmit={handleAssign} className="border-t border-gray-100 pt-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Add Assignment</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <select value={assignRole} onChange={e => { setAssignRole(e.target.value as 'provider' | 'funder'); setAssignUserId('') }}
                   className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
                   <option value="provider">Provider</option>
@@ -523,7 +524,7 @@ export default function CaseDetailPage({ params }: Props) {
                   Each selected bill's line items will use CPT-specific negotiated rates. Batch totals update automatically.
                 </p>
 
-                <div className="grid grid-cols-2 gap-3 mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="text-xs font-medium text-gray-700 mb-1 block">Provider *</label>
                     {providerAssignments.length === 0 ? (
@@ -597,19 +598,19 @@ export default function CaseDetailPage({ params }: Props) {
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto"><table className="w-full min-w-[400px] text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b border-gray-100">
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Batch</th>
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Funder</th>
-                      <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Benchmark</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Batch</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Status</th>
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Funder</th>
+                      <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Medicare</th>
                       {showFunderAmount
-                        ? <th className="text-right px-5 py-3 font-medium text-gray-500">Funder Funding</th>
-                        : <th className="text-right px-5 py-3 font-medium text-gray-500">Provider Payout</th>
+                        ? <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Funding</th>
+                        : <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Payout</th>
                       }
-                      {showLfSpread && <th className="text-right px-5 py-3 font-medium text-gray-500">LF Spread</th>}
-                      <th className="text-left px-5 py-3 font-medium text-gray-500">Created</th>
+                      {showLfSpread && <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">LF Spread</th>}
+                      <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Created</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -617,27 +618,28 @@ export default function CaseDetailPage({ params }: Props) {
                       <tr key={batch.id}
                         className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors"
                         onClick={() => router.push(`/funding-batches/${batch.id}`)}>
-                        <td className="px-5 py-3">
+                        <td className="px-4 sm:px-5 py-3">
                           <span className="font-medium text-blue-700">{batch.batch_name || `#${batch.id}`}</span>
                           <span className="text-xs text-gray-400 ml-2">{batch.item_count} items</span>
                         </td>
-                        <td className="px-5 py-3">
+                        <td className="px-4 sm:px-5 py-3">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${BATCH_STATUS_COLORS[batch.status] ?? 'bg-gray-100 text-gray-600'}`}>
                             {BATCH_STATUS_LABELS[batch.status] ?? batch.status}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-gray-600 text-xs">{batch.assigned_funder_org ?? '—'}</td>
-                        <td className="px-5 py-3 text-right tabular-nums">{formatCurrency(batch.total_medicare_amount)}</td>
+                        <td className="px-4 sm:px-5 py-3 text-gray-600 text-xs hidden sm:table-cell">{batch.assigned_funder_org ?? '—'}</td>
+                        <td className="px-4 sm:px-5 py-3 text-right tabular-nums hidden sm:table-cell">{formatCurrency(batch.total_medicare_amount)}</td>
                         {showFunderAmount
-                          ? <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
-                          : <td className="px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
+                          ? <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_funder_funding_amount)}</td>
+                          : <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-blue-700 font-medium">{formatCurrency(batch.total_provider_negotiated_payout)}</td>
                         }
-                        {showLfSpread && <td className="px-5 py-3 text-right tabular-nums text-green-700">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
-                        <td className="px-5 py-3 text-xs text-gray-400">{formatDate(batch.created_at)}</td>
+                        {showLfSpread && <td className="px-4 sm:px-5 py-3 text-right tabular-nums text-green-700 hidden sm:table-cell">{formatCurrency(batch.total_law_firm_spread_amount)}</td>}
+                        <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden md:table-cell">{formatDate(batch.created_at)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
           </div>
@@ -699,31 +701,32 @@ function UploadBillInline({ caseId, onUploaded, autoOpen, onAutoOpenConsumed }: 
   )
 
   return (
-    <div className="flex items-end gap-2 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
-      <div>
-        <label className="text-xs text-gray-600 mb-1 block">Bill name (optional)</label>
-        <input type="text" value={billName} onChange={e => setBillName(e.target.value)}
-          placeholder="e.g. ER Visit May 2026"
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-44" />
+    <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+        <div>
+          <label className="text-xs text-gray-600 mb-1 block">Bill name (optional)</label>
+          <input type="text" value={billName} onChange={e => setBillName(e.target.value)}
+            placeholder="e.g. ER Visit May 2026"
+            className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600 mb-1 block">Provider name (optional)</label>
+          <input type="text" value={providerName} onChange={e => setProviderName(e.target.value)}
+            placeholder="e.g. City General Hospital"
+            className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+        </div>
       </div>
-      <div>
-        <label className="text-xs text-gray-600 mb-1 block">Provider name (optional)</label>
-        <input type="text" value={providerName} onChange={e => setProviderName(e.target.value)}
-          placeholder="e.g. City General Hospital"
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-44" />
-      </div>
-      <div>
-        <label className="text-xs text-gray-600 mb-1 block">PDF file</label>
-        <label className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border cursor-pointer transition-colors ${
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border cursor-pointer transition-colors ${
           uploading ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
         }`}>
           {uploading ? 'Uploading…' : 'Choose PDF'}
           <input type="file" accept=".pdf" onChange={handleFile} disabled={uploading} className="hidden" />
         </label>
+        <button onClick={() => { setShowForm(false); setUploadError('') }}
+          className="px-3 py-2 text-sm text-gray-500 hover:text-gray-800">Cancel</button>
+        {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
       </div>
-      <button onClick={() => { setShowForm(false); setUploadError('') }}
-        className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-800">Cancel</button>
-      {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
     </div>
   )
 }

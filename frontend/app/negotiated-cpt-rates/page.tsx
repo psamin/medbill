@@ -136,10 +136,10 @@ export default function NegotiatedCptRatesPage() {
 
   return (
     <AppShell>
-      <main className="p-8">
-        <div className="mb-8 flex items-start justify-between">
+      <main className="p-4 sm:p-8">
+        <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Negotiated CPT/HCPCS Rates</h1>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Negotiated CPT/HCPCS Rates</h1>
             <p className="mt-1 text-sm text-gray-500">
               Law firm + provider fee schedule by CPT code. Each code can have its own
               Medicare-based multiplier. Provider payout = Medicare Allowed × Multiplier.
@@ -147,7 +147,7 @@ export default function NegotiatedCptRatesPage() {
           </div>
           <button
             onClick={openNew}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shrink-0"
           >
             + Add CPT Rate
           </button>
@@ -159,7 +159,7 @@ export default function NegotiatedCptRatesPage() {
             <h2 className="text-sm font-semibold text-blue-900 mb-3">
               {editingId ? 'Edit CPT Rate' : 'Add CPT/HCPCS Negotiated Rate'}
             </h2>
-            <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
               <div>
                 <label className="text-xs text-gray-600 mb-1 block">Provider *</label>
                 <select
@@ -241,7 +241,7 @@ export default function NegotiatedCptRatesPage() {
         <div className="flex gap-3 mb-5 flex-wrap items-center">
           <select
             value={filterProvider} onChange={e => setFilterProvider(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none"
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none w-full sm:w-auto"
           >
             <option value="">All providers</option>
             {providers.map(p => (
@@ -251,7 +251,7 @@ export default function NegotiatedCptRatesPage() {
           <input
             type="text" value={filterCode} onChange={e => setFilterCode(e.target.value)}
             placeholder="Filter by CPT code…"
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none w-40"
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none w-full sm:w-40"
           />
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
             <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
@@ -273,44 +273,45 @@ export default function NegotiatedCptRatesPage() {
           </div>
         ) : (
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[540px] text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className="text-left px-5 py-3 font-medium text-gray-500">CPT/HCPCS Code</th>
-                  <th className="text-left px-5 py-3 font-medium text-gray-500">Provider</th>
-                  <th className="text-right px-5 py-3 font-medium text-gray-500">Medicare Multiplier</th>
-                  <th className="text-left px-5 py-3 font-medium text-gray-500">Notes</th>
-                  <th className="text-left px-5 py-3 font-medium text-gray-500">Effective Dates</th>
-                  <th className="text-left px-5 py-3 font-medium text-gray-500">Status</th>
-                  <th className="px-5 py-3" />
+                  <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Code</th>
+                  <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500">Provider</th>
+                  <th className="text-right px-4 sm:px-5 py-3 font-medium text-gray-500">Multiplier</th>
+                  <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Notes</th>
+                  <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden md:table-cell">Effective Dates</th>
+                  <th className="text-left px-4 sm:px-5 py-3 font-medium text-gray-500 hidden sm:table-cell">Status</th>
+                  <th className="px-4 sm:px-5 py-3" />
                 </tr>
               </thead>
               <tbody>
                 {displayed.map(rate => (
                   <tr key={rate.id} className={`border-b border-gray-100 last:border-0 ${rate.active ? 'hover:bg-gray-50' : 'opacity-50'}`}>
-                    <td className="px-5 py-3 font-mono font-semibold text-gray-900">{rate.cpt_code}</td>
-                    <td className="px-5 py-3 text-gray-700">{providerName(rate.provider_id)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums">
+                    <td className="px-4 sm:px-5 py-3 font-mono font-semibold text-gray-900">{rate.cpt_code}</td>
+                    <td className="px-4 sm:px-5 py-3 text-gray-700">{providerName(rate.provider_id)}</td>
+                    <td className="px-4 sm:px-5 py-3 text-right tabular-nums">
                       <span className="text-blue-700 font-semibold">{(parseFloat(rate.medicare_anchor_multiplier) * 100).toFixed(0)}%</span>
-                      <span className="text-gray-400 text-xs ml-1">of Medicare</span>
+                      <span className="text-gray-400 text-xs ml-1 hidden sm:inline">of Medicare</span>
                     </td>
-                    <td className="px-5 py-3 text-gray-500 text-xs">{rate.notes ?? '—'}</td>
-                    <td className="px-5 py-3 text-xs text-gray-400">
+                    <td className="px-4 sm:px-5 py-3 text-gray-500 text-xs hidden md:table-cell">{rate.notes ?? '—'}</td>
+                    <td className="px-4 sm:px-5 py-3 text-xs text-gray-400 hidden md:table-cell">
                       {rate.effective_start_date ? formatDate(rate.effective_start_date) : '—'}
                       {rate.effective_end_date ? ` → ${formatDate(rate.effective_end_date)}` : ''}
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 sm:px-5 py-3 hidden sm:table-cell">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${rate.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                         {rate.active ? 'Active' : 'Inactive'}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-right">
+                    <td className="px-4 sm:px-5 py-3 text-right">
                       {rate.active && (
                         <div className="flex items-center gap-3 justify-end">
                           <button onClick={() => openEdit(rate)}
-                            className="text-xs text-blue-600 hover:text-blue-800">Edit</button>
+                            className="text-xs text-blue-600 hover:text-blue-800 py-1">Edit</button>
                           <button onClick={() => deactivate(rate)}
-                            className="text-xs text-gray-400 hover:text-red-600">Deactivate</button>
+                            className="text-xs text-gray-400 hover:text-red-600 py-1">Deactivate</button>
                         </div>
                       )}
                     </td>
@@ -318,6 +319,7 @@ export default function NegotiatedCptRatesPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </main>

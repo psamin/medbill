@@ -74,10 +74,10 @@ export default function BillDetailPage({ params }: Props) {
   }
 
   if (loading) return (
-    <AppShell><main className="p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
+    <AppShell><main className="p-4 sm:p-8"><div className="text-sm text-gray-400 text-center py-12">Loading…</div></main></AppShell>
   )
   if (error || !bill) return (
-    <AppShell><main className="p-8"><p className="text-sm text-red-600">{error || 'Bill not found'}</p></main></AppShell>
+    <AppShell><main className="p-4 sm:p-8"><p className="text-sm text-red-600">{error || 'Bill not found'}</p></main></AppShell>
   )
 
   const isLawFirm  = user?.role === 'law_firm' || user?.role === 'admin'
@@ -122,13 +122,13 @@ export default function BillDetailPage({ params }: Props) {
 
   return (
     <AppShell>
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <div className="mb-6">
           <Link href={`/cases/${bill.case_id}`} className="text-sm text-blue-600 hover:text-blue-700">← Case</Link>
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <div className="flex items-start justify-between gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             <div>
               {renaming ? (
                 <div className="flex items-center gap-2">
