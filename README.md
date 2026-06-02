@@ -1,6 +1,6 @@
 # MedBill
 
-**Demo Video:** [Watch the MedBill demo](https://youtu.be/a_tE8bq_LYY](https://youtu.be/oXoKcJ_Ne78)
+**Demo Video:** [Watch the MedBill demo](https://youtu.be/oXoKcJ_Ne78)
 
 A medical bill processing platform that extracts line items from PDF bills, compares them against real Medicare rates, calculates overbilling, and manages a law firm → provider → funder funding workflow.
 
